@@ -1,17 +1,31 @@
 # @mzwing/pi-permission-auto-review
 
-[![npm](https://img.shields.io/npm/v/@mzwing/pi-permission-auto-review)](https://www.npmjs.com/package/@mzwing/pi-permission-auto-review)
+[![npm][npm-badge]][npm]
 
-A [Pi](https://github.com/earendil-works/pi) extension that adds automatic permission reviews to [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system). Each ask is judged by a reviewer model first; whatever it cannot decide falls through to the normal prompt. A preset picks the reviewer:
+[npm-badge]: https://img.shields.io/npm/v/@mzwing/pi-permission-auto-review
+[npm]: https://www.npmjs.com/package/@mzwing/pi-permission-auto-review
 
-- `codex`, the default: OpenAI's `codex-auto-review` model against a bundled adaptation of the [OpenAI Codex Guardian policy](https://github.com/openai/codex/tree/main/codex-rs/prompts/templates/guardian).
-- `claude-code`: the two-stage check of [Claude Code's auto mode](https://code.claude.com/docs/en/auto-mode-config), on Claude Sonnet 5 by default, with its prompt and rules written anew for Pi.
+When [`@gotgenes/pi-permission-system`][permission-system] would ask you whether
+[Pi][pi] may run a tool call, this extension asks a reviewer model first. The
+reviewer allows the call, refuses it with a reason that the agent sees, or
+leaves it to you. You choose the reviewer with a preset:
 
-## Differences between @gotgenes/pi-permission-model-judge
+- `codex`, the default, is OpenAI's `codex-auto-review` model with an
+  adaptation of [Codex's Guardian policy][guardian]. It follows Codex's
+  reviewer closely: what counts as your instruction, how the transcript is
+  built, when the agent is stopped, and the optional read-only investigation.
+- `claude-code` is the two-stage check of [Claude Code's auto mode][auto-mode],
+  on Claude Sonnet 5 by default, with its prompt and rules written anew for Pi.
 
-`@gotgenes/pi-permission-model-judge` is a general-purpose model-based authorizer that can be used to evaluate any permission request.
+[`@gotgenes/pi-permission-model-judge`][model-judge] is a general-purpose model
+authorizer. This extension instead reproduces the reviewers of two coding
+agents, each with the prompt, transcript and review flow of the original.
 
-Ours reproduces the reviewers of two coding agents, Codex's auto-review and Claude Code's auto mode, each with the prompt, transcript and review flow it was built around.
+[permission-system]: https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system
+[pi]: https://github.com/earendil-works/pi
+[guardian]: https://github.com/openai/codex/tree/main/codex-rs/prompts/templates/guardian
+[auto-mode]: https://code.claude.com/docs/en/auto-mode-config
+[model-judge]: https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-model-judge
 
 ## Install
 
@@ -20,11 +34,14 @@ pi install npm:@gotgenes/pi-permission-system
 pi install npm:@mzwing/pi-permission-auto-review
 ```
 
-Requires Pi 1.4.0 or later and `@gotgenes/pi-permission-system` 37.x – 42.x.
+It needs Pi 1.5.0 or later and `@gotgenes/pi-permission-system` 37.x to 42.x.
 
-## Usage
-
-Load this extension before `@gotgenes/pi-permission-system`. The reviewer judges the complete input of the call that Pi is about to run, which only a `tool_call` handler that runs before pi-permission-system can capture. Pi runs those handlers in extension load order: CLI `-e` extensions first, then the settings `extensions` paths, then `packages`, keeping the order within each list. When both packages are in the same `packages` list, put this one first:
+Load this extension before pi-permission-system. The reviewer judges the
+complete input of the call that Pi is about to run, and only a `tool_call`
+handler that runs before pi-permission-system sees all of it. Pi runs those
+handlers in load order: `-e` extensions first, then the settings `extensions`
+paths, then `packages`, each in the order listed. With both in `packages`, put
+this one first:
 
 ```json
 {
@@ -32,27 +49,8 @@ Load this extension before `@gotgenes/pi-permission-system`. The reviewer judges
 }
 ```
 
-An ask without a captured input defers to the next authorizer or the human prompt, and so does an ask from a forwarded subagent, whose input the parent cannot see. A write or edit to Pi's settings or to this extension's or pi-permission-system's configuration also defers, because it would change what governs the agent and this review.
-
-With the `codex` preset, only messages that the person sent from the interactive UI or over RPC count as their instructions. Messages that other extensions send, and messages in sessions recorded before this version, are shown to the reviewer as untrusted. When a skill or prompt template expanded what the person typed, their typed text counts and the expansion does not. See [provenance trust][provenance-trust] for the limits of this check.
-
-The `codex` preset shows the reviewer every user message in full, including ones that compaction removed from the agent's context. When a long session would not fit the reviewer model, other records are left out first, and then user messages longer than 900 tokens are shortened, oldest first. A review defers when a context edit removed or replaced a user message. See [context edits and compaction][context-edits].
-
-With the `codex` preset, three denials in a row, or ten among the last fifty reviews, stop the agent, as in Codex: the ask that reaches the limit is denied with its review's reason, the extension shows a warning and interrupts the turn, and any further ask before the run ends is refused without review. The count starts again with the next agent run. The `claude-code` preset instead hands the ask that reaches its limit to the human prompt.
-
-With the `codex` preset, the reviewer can also inspect local state, such as file contents or a repository's remotes, through the sandbox that you configured with pi-bring-your-own-sandbox. It needs a backend that cannot write files or reach the network; without one, the footer shows `no investigation` and the reviewer judges from the transcript alone. See [investigation][investigation].
-
-When the reviewer refuses a shell command and the session can show a confirmation, the agent can ask you to run that exact command anyway with `request_manual_approval`. See [manual approval][manual-approval].
-
-`/auto-stats` shows what automatic review decided and cost in this session and across your Pi profile, and how you answered the asks that it deferred. See [statistics][statistics].
-
-[context-edits]: docs/codex-parity.md#context-edits-and-compaction
-[statistics]: docs/status.md
-[manual-approval]: docs/manual-approval.md
-[investigation]: docs/codex-parity.md#investigation
-[provenance-trust]: docs/codex-parity.md#provenance-trust
-
-Add the authorizer to pi-permission-system's config, normally `~/.pi/agent/extensions/pi-permission-system/config.json`:
+Then add the reviewer to pi-permission-system's authorizer chain, normally in
+`~/.pi/agent/extensions/pi-permission-system/config.json`:
 
 ```json
 {
@@ -60,63 +58,144 @@ Add the authorizer to pi-permission-system's config, normally `~/.pi/agent/exten
 }
 ```
 
-The `codex` preset reuses Pi's `openai-codex` login, listed as "OpenAI Codex (legacy)" in `/login`; the `claude-code` preset needs an `anthropic` login. Either can run on another model through `provider` and `model`.
+The `codex` preset uses Pi's `openai-codex` login, listed as "OpenAI Codex
+(legacy)" in `/login`; the `claude-code` preset needs an `anthropic` login.
 
-Claude Code approves most reads and edits inside the project without its reviewer; to do the same, allow them in pi-permission-system's own rules, so that only riskier asks reach the reviewer.
-
-`/permission-auto-review` edits the config interactively and applies it without reloading the session. Its subcommands are `show`, `path`, `defaults` (the built-in rules of the active preset), `reset [global|project]` and `help`.
-
-The footer shows whether the reviewer is registered and how many asks it has allowed, denied or deferred in the session.
+The reviewer only sees the asks that your pi-permission-system rules send to
+it. Claude Code approves most reads and edits inside the project without its
+reviewer; to do the same, allow them in pi-permission-system's own rules.
 
 ## Configuration
 
-Optional. `~/.pi/agent/extensions/pi-permission-auto-review/config.json` and `.pi/extensions/pi-permission-auto-review/config.json` are merged, the project over the global one; the project file is read only once Pi trusts the project. An invalid config disables automatic decisions.
-
-| Field              | Default (`codex` / `claude-code`)       | Description                                                   |
-| ------------------ | --------------------------------------- | ------------------------------------------------------------- |
-| `preset`           | `codex`                                 | `codex` or `claude-code`                                      |
-| `provider`         | `openai-codex` / `anthropic`            | Pi provider id of the reviewer model                          |
-| `model`            | `codex-auto-review` / `claude-sonnet-5` | Reviewer model id                                             |
-| `reasoning`        | `low` / `high`                          | Reasoning level; `claude-code` uses it for its second pass    |
-| `timeoutMs`        | `90000`                                 | Total budget across retries                                   |
-| `maxRetries`       | `2`                                     | Retries after a transient failure or a malformed reply        |
-| `attemptTimeoutMs` | —                                       | Time limit for one call; without it, only `timeoutMs` applies |
-| `followUpReviews`  | `auto`                                  | Continue the reviewer's conversation across asks; see below   |
-| `autoMode`         | —                                       | Rules beside or instead of the preset's own; see below        |
-
-`autoMode` takes the same four lists as Claude Code's own `autoMode` settings, so rules copied from there paste in. `environment` tells the reviewer what lies inside your trust boundary, `hard_deny` rules always block, and `soft_deny` rules block unless an `allow` exception or the user's explicit consent clears them. Each is a list of prose rules: the entry `"$defaults"` stands for the preset's built-in rules, and a list without it replaces them. Under `codex`, `"$defaults"` keeps the Guardian policy's sections where they are, and your other rules join it as operator policy.
+Configuration is optional. The extension merges a global file,
+`~/.pi/agent/extensions/pi-permission-auto-review/config.json`, with a project
+file, `.pi/extensions/pi-permission-auto-review/config.json`, and reads the
+project file only once Pi trusts the project. `preset` chooses the reviewer, and
+`provider` and `model` choose the model that it uses:
 
 ```json
-{
-  "preset": "claude-code",
-  "autoMode": {
-    "environment": ["$defaults", "Source control: github.com/acme and every repository under it"],
-    "soft_deny": ["$defaults", "Never run database migrations by hand"]
-  }
-}
+{ "preset": "claude-code" }
 ```
 
-Like Codex, a later ask in a session continues the reviewer's conversation and sends only what the session added since the last review. The conversation starts over in full when it would pass 256k tokens or overflow the reviewer's context window, when the session moves to another branch, or after a review fails. `auto` also starts over after a follow-up the provider served without a cache hit, so a provider that does not cache never resends a growing conversation; `always` keeps the conversation then, and `off` sends every review in full, as Claude Code does.
+`/permission-auto-review` edits the config in a menu and applies it without
+reloading the session. See [configuration][configuration] for every field, your
+own rules in `autoMode`, and how follow-up reviews continue the reviewer's
+conversation.
+
+[configuration]: docs/configuration.md
+
+## What the reviewer decides
+
+- `allow`: the call runs.
+- `deny`: the call is refused, and the agent receives the reason with an
+  instruction not to work around it.
+- `defer`: pi-permission-system moves to the next authorizer in the chain or
+  asks you. The reviewer defers when it cannot decide: the model failed or
+  timed out, the call's input was not captured, the ask came from a subagent,
+  the call would change Pi's settings or the configuration of this extension,
+  pi-permission-system or the sandbox, or your messages changed while the
+  review ran.
+- When you interrupt the turn, a review in progress ends with a refusal, so you
+  are not asked about a turn that you have just stopped.
+
+With the `codex` preset, three refusals in a row, or ten among the last fifty
+reviews, stop the agent, as in Codex: the extension warns you, interrupts the
+turn, and refuses further asks without review until the next run. The
+`claude-code` preset passes the ask that reaches its limit to you.
+
+The footer shows whether the reviewer is registered, and how many asks it has
+allowed, denied and deferred in the session.
+
+## What counts as your instruction
+
+With either preset, only messages that you sent from Pi's interface or over
+RPC can authorize an action. Messages that other extensions send are shown to
+the reviewer as untrusted. When a skill or prompt template expanded what you
+typed, your typed text counts and the expansion does not. When the extension
+cannot establish where a message came from, the message can still restrict the
+action but cannot authorize it.
+
+The `codex` preset also counts your answers to recognized question tools such
+as `ask_user` and your approvals in `submit_plan`. It passes every one of your
+messages to the reviewer in full, including messages that compaction removed
+from the agent's context. When a session is too long for the reviewer model, it
+leaves out other records first and then shortens your messages longer than 900
+tokens, oldest first. If that is not enough, the ask comes to you.
+
+## Investigation
+
+With the `codex` preset, the reviewer can check local facts before it decides,
+such as a file's contents or where a repository's remote points, by running
+read-only commands in the sandbox that you configured with
+[pi-bring-your-own-sandbox][investigation]. The SDK is included, but you must
+load a provider extension separately. Investigation needs a backend that cannot
+write files or reach the network. When your sandbox cannot provide one, which
+includes the default of running on the host, the reviewer judges from the
+transcript alone and the footer shows `no investigation` with the reason.
+
+[investigation]: docs/codex-parity.md#investigation
+
+## Running a refused command anyway
+
+When the reviewer refuses a shell command and Pi can show you a confirmation,
+the agent can ask you to run that exact command with
+`request_manual_approval`. You see the command first and the agent's reason
+last. Approving runs the captured command once, through the normal permission
+checks; rejecting stops the agent retrying it until you give new direction.
+See [manual approval][manual-approval].
+
+[manual-approval]: docs/manual-approval.md
+
+## Statistics
+
+`/auto-stats` compares this session with your whole Pi profile: how many asks
+the reviewer allowed, refused and left to you, and the estimated cost.
+`/auto-stats details` opens one section for either scope: activity, tokens and
+cost, human approvals, models, or recording problems. `/auto-stats text` prints
+every section as plain text. See [statistics][status] for the commands that
+open a section directly.
+
+[status]: docs/status.md
+
+## Limits
+
+- Evidence is text only; the reviewer never sees images.
+- A tool call handler that loads after pi-permission-system can still change a
+  call after the reviewer approved it.
+- The records of where each message came from are ordinary session entries,
+  which another installed extension could write.
+- Asks from subagents always go to you.
+
+[Parity with Codex][parity] explains these limits, each place where the `codex`
+preset departs from Codex, and what Pi would need to close the gaps.
+[Live evaluation][live] describes the optional tests against a real reviewer
+model.
+
+[parity]: docs/codex-parity.md
+[live]: docs/live-evaluation.md
 
 ## Programmatic use
 
-`@mzwing/pi-permission-auto-review/review` exports the prompt and verdict pipeline without needing Pi at runtime:
+`@mzwing/pi-permission-auto-review/review` exports the `codex` preset's prompt
+and verdict pipeline, which needs no running Pi session:
 
 ```ts
 import {
   buildReviewPrompt,
   DEFAULT_CONFIG,
-  findToolCallInput,
   parseReviewAssessment,
   renderTranscript,
 } from '@mzwing/pi-permission-auto-review/review'
 
-const toolInput = findToolCallInput(sessionEntries, details.toolCallId)
-const prompt = buildReviewPrompt(DEFAULT_CONFIG, renderTranscript(sessionEntries), details, toolInput)
+const transcript = renderTranscript(sessionManager.getBranch(), sessionManager.buildSessionProjection())
+// `action` is the complete call as a ReviewAction
+const prompt = buildReviewPrompt(DEFAULT_CONFIG, transcript, details, action)
 const assessment = parseReviewAssessment(modelReply)
 ```
 
-The `claude-code` pipeline sits beside it, under names such as `buildClaudeCodeSystemPrompt`, `renderClaudeCodeTranscript` and `parseClaudeCodeVerdict`.
+The `claude-code` pipeline is exported beside it, under names such as
+`buildClaudeCodeSystemPrompt`, `renderClaudeCodeTranscript` and
+`parseClaudeCodeVerdict`.
 
 ## License
 
