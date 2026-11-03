@@ -10,7 +10,12 @@ import type { CallUsage, ModelCall } from './model-call.js'
 import type { ReviewModelRegistry } from './model.js'
 import type { ReviewSnapshot } from './snapshot.js'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
-import type { Authorizer, AuthorizerVerdict, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
+import type {
+  Authorizer,
+  AuthorizerLog,
+  AuthorizerVerdict,
+  PromptPermissionDetails,
+} from '@gotgenes/pi-permission-system'
 import { PRESETS } from '../presets/presets.js'
 import { CallLog } from '../statistics/calls.js'
 import { createModelCall } from './model-call.js'
@@ -208,6 +213,21 @@ async function runReview(
   }
 }
 
+/** A log whose failures are dropped, since logging must not change a verdict */
+function quiet(log: AuthorizerLog): AuthorizerLog {
+  const guarded =
+    (write: AuthorizerLog['review']): AuthorizerLog['review'] =>
+    (...args) => {
+      try {
+        write(...args)
+      } catch {
+        // The verdict stands without its log entry
+      }
+    }
+
+  return { review: guarded(log.review.bind(log)), debug: guarded(log.debug.bind(log)) }
+}
+
 export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionReviewer {
   const { config } = runtime
   const preset = PRESETS[config.preset]
@@ -216,7 +236,8 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
   // As upstream keeps it: concurrent reviews each continue the conversation they started from, and the last to finish wins
   let conversation: ReviewConversation | undefined
 
-  const authorize: Authorizer['authorize'] = async (details, _query, log) => {
+  const authorize: Authorizer['authorize'] = async (details, _query, rawLog) => {
+    const log = quiet(rawLog)
     const startedAt = Date.now()
     const entryBase = { requestId: details.requestId, provider: config.provider, model: config.model }
     const elapsed = (): number => Math.max(0, Date.now() - startedAt)

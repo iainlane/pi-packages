@@ -427,6 +427,46 @@ describe('permission auto-review extension', () => {
     })
   })
 
+  it.each([
+    { failure: 'logging', verdict: 'deny' },
+    { failure: 'statistics', verdict: 'deny' },
+    { failure: 'footer', verdict: 'deny' },
+    { failure: 'model registry', verdict: 'defer' },
+  ])('answers once with the right verdict when the $failure throws', async ({ failure, verdict }) => {
+    const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(registerAuthorizer)
+    const { registry } = reviewRegistry(DENY)
+    if (failure === 'model registry') {
+      Object.assign(registry, {
+        getProvider: () => {
+          throw new Error('registry failed')
+        },
+      })
+    }
+    const harness = start(registry)
+    harness.start()
+    harness.ready()
+    if (failure === 'statistics') {
+      harness.appendEntry.mockImplementation(() => {
+        throw new Error('append failed')
+      })
+    }
+    if (failure === 'footer') {
+      harness.setStatus.mockImplementation(() => {
+        throw new Error('footer failed')
+      })
+    }
+    const authorize = registerAuthorizer.mock.calls[0]?.[1]
+    const broken = (): never => {
+      throw new Error('log failed')
+    }
+    const log =
+      failure === 'logging' ? { review: vi.fn(broken), debug: vi.fn(broken) } : { review: vi.fn(), debug: vi.fn() }
+    const answer = await authorize?.(permissionDetails({ toolCallId: 'call-1' }), {} as PermissionQuery, log)
+
+    expect(answer?.kind).toBe(verdict)
+  })
+
   it('hot-swaps the reviewer generation after a config reset, closing the circuit', async () => {
     const global = configPath(workspace.cwd, 'global')
     writeFile(global, { model: 'old-review-model' })

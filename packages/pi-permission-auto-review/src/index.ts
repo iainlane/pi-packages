@@ -144,7 +144,11 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   pi.events.on(PERMISSIONS_DECISION_CHANNEL, data => manual.decided(data as PermissionDecisionEvent))
 
   function renderStatus(current: Generation): void {
-    current.runtime.ui.setStatus(EXTENSION_ID, statusText(current, tally, investigationStatus))
+    try {
+      current.runtime.ui.setStatus(EXTENSION_ID, statusText(current, tally, investigationStatus))
+    } catch {
+      // The footer is a display; nothing that renders it may fail because of it
+    }
   }
 
   function createGeneration(runtime: Generation['runtime'], config: AutoReviewConfig | undefined): Generation {
@@ -189,6 +193,9 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
         let verdict: AuthorizerVerdict
         try {
           verdict = await pending
+        } catch {
+          // The chain does not isolate a link that throws, so a failure has to leave as a verdict
+          verdict = { kind: 'defer' }
         } finally {
           outstanding.delete(pending)
         }
