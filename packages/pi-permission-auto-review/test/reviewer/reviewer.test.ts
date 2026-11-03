@@ -59,6 +59,33 @@ describe('permission reviewer', () => {
     })
   })
 
+  it.each([
+    { preset: 'codex', reply: ALLOW, format: true },
+    { preset: 'claude-code', reply: '<block>no</block>', format: false },
+  ] as const)(
+    'asks the provider for a JSON verdict natively only with the codex preset: $preset',
+    async ({ preset, reply: text, format }) => {
+      const harness = createHarness({ config: { preset }, replies: [reply(text)] })
+      await harness.authorize()
+      const [, , options] = harness.streamSimple.mock.calls[0] ?? []
+      const payload = (await options?.onPayload?.({}, {} as never)) as { text?: { format?: { required?: unknown } } }
+
+      expect(payload?.text?.format).toStrictEqual(
+        format
+          ? {
+              type: 'json_schema',
+              name: 'codex_output_schema',
+              strict: true,
+              schema: expect.objectContaining({
+                required: ['risk_level', 'user_authorization', 'outcome', 'rationale'],
+                additionalProperties: false,
+              }) as unknown,
+            }
+          : undefined,
+      )
+    },
+  )
+
   it('returns a denial that teaches and forbids workarounds, without writing the rationale to the log', async () => {
     const { verdict, entries } = await createHarness({ replies: [reply(DENY)] }).authorize()
 

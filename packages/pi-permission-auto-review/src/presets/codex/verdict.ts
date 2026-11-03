@@ -1,3 +1,5 @@
+import type { JsonSchema } from '../../reviewer/output-format.js'
+import { toJsonSchema } from '@valibot/to-json-schema'
 import * as v from 'valibot'
 
 const assessmentPayloadSchema = v.strictObject({
@@ -6,6 +8,17 @@ const assessmentPayloadSchema = v.strictObject({
   outcome: v.picklist(['allow', 'deny']),
   rationale: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_000))),
 })
+
+/** The verdict's shape for a provider's native JSON format. APIs differ in the string bounds that they accept, so only the local check applies those */
+export const REVIEW_ASSESSMENT_SCHEMA: JsonSchema = (() => {
+  const { $schema: _dialect, ...schema } = toJsonSchema(assessmentPayloadSchema, {
+    target: 'draft-2020-12',
+    typeMode: 'input',
+    ignoreActions: ['trim', 'min_length', 'max_length'],
+  })
+
+  return schema
+})()
 
 type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
 type UserAuthorization = 'unknown' | 'low' | 'medium' | 'high'

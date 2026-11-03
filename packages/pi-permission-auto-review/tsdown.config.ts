@@ -10,7 +10,7 @@ const config: UserConfig = defineConfig({
       '@gotgenes/pi-permission-system',
       'pi-bring-your-own-sandbox',
     ],
-    onlyBundle: ['valibot'],
+    onlyBundle: ['valibot', '@valibot/to-json-schema'],
   },
   dts: true,
   entry: ['src/index.ts', 'src/review.ts'],

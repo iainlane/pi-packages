@@ -6,7 +6,7 @@ import { DenialCircuitBreaker } from './circuit-breaker.js'
 import { BUILT_IN_RULES, buildSystemPrompt, POLICY_REVISION } from './policy.js'
 import { buildFollowUpPrompt, buildUserPrompt } from './review-prompt.js'
 import { evidenceChangedSince, manifestFields, renderTranscript } from './transcript.js'
-import { parseReviewAssessment } from './verdict.js'
+import { parseReviewAssessment, REVIEW_ASSESSMENT_SCHEMA } from './verdict.js'
 
 // Verbatim `REJECTION_INSTRUCTIONS` from openai/codex `codex-rs/prompts/src/model_messages/guardian.rs`
 const REJECTION_INSTRUCTIONS =
@@ -32,7 +32,7 @@ export const CODEX_PRESET: Preset = {
         : undefined
     const { request, transcript, priorReviews } = prepareReview(
       { ...input, conversation },
-      { systemPrompt, reasoning: config.reasoning },
+      { systemPrompt, reasoning: config.reasoning, outputSchema: REVIEW_ASSESSMENT_SCHEMA },
       after => {
         if (after !== undefined) {
           const delta = renderTranscript(branch, projection, { from: after.entryIndex + 1 })

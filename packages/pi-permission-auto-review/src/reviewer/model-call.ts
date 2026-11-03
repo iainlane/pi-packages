@@ -1,9 +1,11 @@
 import type { AutoReviewConfig } from '../config/config.js'
 import type { InvestigationRun } from '../investigation/investigation.js'
+import type { JsonSchema } from './output-format.js'
 import type { Api, AssistantMessage, Message, Model, ToolCall, ToolChoice, Usage } from '@earendil-works/pi-ai'
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent'
 import { clampThinkingLevel, isRetryableAssistantError } from '@earendil-works/pi-ai'
 import { approximateTokens } from '../text.js'
+import { outputFormatHook } from './output-format.js'
 
 const FIRST_RETRY_DELAY_MS = 250
 const MAX_RETRY_DELAY_MS = 30_000
@@ -30,6 +32,8 @@ export interface ModelRequest {
   tokens: number
   reasoning: AutoReviewConfig['reasoning']
   maxTokens?: number | undefined
+  /** The JSON schema of the final answer, which the provider is asked to follow where its API supports that */
+  outputSchema?: JsonSchema | undefined
 }
 
 type CallResult<T> =
@@ -136,6 +140,7 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
   ): Promise<CallReply<T>> {
     // Clamped as in Pi's own turns: `off` on a model that cannot stop thinking means its least effort, not its default
     const reasoning = clampThinkingLevel(model, request.reasoning)
+    const onPayload = request.outputSchema === undefined ? undefined : outputFormatHook(model.api, request.outputSchema)
 
     for (let attempt = 0; ; attempt += 1) {
       const attemptController = new AbortController()
@@ -160,6 +165,7 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
             ...(reasoning === 'off' ? {} : { reasoning }),
             ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
             ...(toolChoice === undefined ? {} : { toolChoice }),
+            ...(onPayload === undefined ? {} : { onPayload }),
           },
         )
         const reply = await raceWithSignal(stream.result(), attemptSignal)

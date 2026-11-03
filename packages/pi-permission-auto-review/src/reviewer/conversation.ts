@@ -58,7 +58,7 @@ export function userMessage(content: string): Message {
  */
 export function prepareReview<T>(
   input: { conversation: ReviewConversation | undefined; branch: SessionEntry[]; contextWindow: number },
-  options: Pick<ModelRequest, 'systemPrompt' | 'reasoning' | 'maxTokens'>,
+  options: Pick<ModelRequest, 'systemPrompt' | 'reasoning' | 'maxTokens' | 'outputSchema'>,
   render: (after: Continuation | undefined) => { content: string; transcript: T },
 ): PreparedReview<T> {
   const { conversation, branch, contextWindow } = input
