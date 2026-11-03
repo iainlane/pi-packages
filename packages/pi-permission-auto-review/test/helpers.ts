@@ -263,6 +263,7 @@ interface ReviewerHarnessOptions {
   hasUI?: boolean
   investigation?: Pick<Investigation, 'availability' | 'forReview'>
   statistics?: ReviewStatistics
+  sessionId?: string
   /** What the action capture answers for each ask; by default the bash command that the ask names */
   resolve?: (details: PromptPermissionDetails) => ActionResolution
 }
@@ -312,7 +313,7 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
         // The fixture entries are not chained, so the projection follows the branch order rather than parent links
         buildSessionProjection: () =>
           buildSessionProjection(branch.map((entry, index) => ({ ...entry, parentId: branch[index - 1]?.id ?? null }))),
-        getSessionId: () => 'session-1',
+        getSessionId: () => options.sessionId ?? 'session-1',
         getLeafId: () => branch.at(-1)?.id ?? null,
       },
       signal: options.turnSignal,

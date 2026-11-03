@@ -458,6 +458,26 @@ describe('permission reviewer', () => {
       expect(options?.signal?.aborted).toBe(true)
     })
 
+    it('gives a call another transport key while an earlier call of the session is still unfinished', async () => {
+      const unfinished = Promise.withResolvers<AssistantMessage>()
+      // Calls that other tests leave unfinished keep their keys, so this test has a session of its own
+      const harness = createHarness({
+        sessionId: 'session-keys',
+        config: { attemptTimeoutMs: 1_000 },
+        replies: [unfinished.promise, reply(ALLOW), reply(ALLOW)],
+      })
+      await harness.authorize('request-1')
+      unfinished.resolve(reply(DENY))
+      await vi.runAllTimersAsync()
+      await harness.authorize('request-2')
+
+      expect(harness.streamSimple.mock.calls.map(([, , options]) => options?.sessionId)).toStrictEqual([
+        'auto-review:session-keys',
+        'auto-review:session-keys:1',
+        'auto-review:session-keys',
+      ])
+    })
+
     it('defers with attempt-timeout once every attempt has timed out', async () => {
       const harness = createHarness({
         config: { maxRetries: 1, attemptTimeoutMs: 1_000 },

@@ -16,6 +16,38 @@ export const OUTPUT_RESERVE_TOKENS = 16_384
 // replace the main conversation's Codex WebSocket continuation
 const SESSION_KEY_PREFIX = 'auto-review:'
 
+/**
+ * Transport keys in use per session. Codex's WebSocket transport keeps one continuation per key, so a call that starts
+ * while another of the session is unfinished, including one abandoned at its timeout, needs a key of its own
+ */
+const busyKeys = new Map<string, Set<number>>()
+
+function acquireKey(sessionId: string): { key: string; release: () => void } {
+  const busy = busyKeys.get(sessionId) ?? new Set<number>()
+  busyKeys.set(sessionId, busy)
+  // The lowest free index, so repeated overlaps reuse a few keys instead of creating a cache entry each
+  let index = 0
+  while (busy.has(index)) {
+    index += 1
+  }
+  busy.add(index)
+  let released = false
+
+  return {
+    key: `${SESSION_KEY_PREFIX}${sessionId}${index === 0 ? '' : `:${index}`}`,
+    release: () => {
+      if (released) {
+        return
+      }
+      released = true
+      busy.delete(index)
+      if (busy.size === 0) {
+        busyKeys.delete(sessionId)
+      }
+    },
+  }
+}
+
 export type CallFailure =
   | 'input-budget-exceeded'
   | 'provider-error'
@@ -152,6 +184,7 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
       let failure: CallFailure = 'provider-error'
       const recorded = calls?.start(model, attempt > 0)
       let started = false
+      const transport = acquireKey(options.sessionId)
       try {
         // The registry resolves the provider's authentication per request, so an unusable login lands here
         const stream = registry.streamSimple(
@@ -166,7 +199,7 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
             signal: attemptSignal,
             timeoutMs: Math.max(1, Math.min(attemptTimeoutMs, deadline - Date.now())),
             // Gateways such as opencode-go also reject requests without a session id
-            sessionId: `${SESSION_KEY_PREFIX}${options.sessionId}`,
+            sessionId: transport.key,
             ...(reasoning === 'off' ? {} : { reasoning }),
             ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
             ...(toolChoice === undefined ? {} : { toolChoice }),
@@ -176,9 +209,16 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
         const result = stream.result()
         started = true
         // Observed before the abortable wait, so usage that arrives after an abort is still recorded
+        // The key stays taken until the provider finishes, even after the review stops waiting for it
         result.then(
-          reply => recorded?.settle(reply),
-          () => recorded?.fail(),
+          reply => {
+            transport.release()
+            recorded?.settle(reply)
+          },
+          () => {
+            transport.release()
+            recorded?.fail()
+          },
         )
         const reply = await raceWithSignal(result, attemptSignal)
         usage.input += reply.usage.input
@@ -203,6 +243,7 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
         }
         // A call that never started has no result to wait for; one that did is settled by its result
         if (!started) {
+          transport.release()
           recorded?.fail()
         }
         if (attempt >= config.maxRetries) {
