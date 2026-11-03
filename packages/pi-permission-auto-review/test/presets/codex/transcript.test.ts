@@ -7,6 +7,7 @@ import { buildReviewPrompt } from '../../../src/presets/codex/review-prompt.js'
 import { evidenceChangedSince, renderTranscript as render } from '../../../src/presets/codex/transcript.js'
 import { USER_PROVENANCE_TYPE } from '../../../src/provenance/provenance.js'
 import { permissionDetails } from '../../helpers.js'
+import { INTERACTION_CASES, planApproval, planDetails, PRESENTED_PLAN } from './interaction-fixtures.js'
 
 // The size of the rendered records, which these tests check through the budget behaviour instead
 const ANY_SIZE: unknown = expect.any(Number)
@@ -20,6 +21,7 @@ function manifest(sources: Record<string, Partial<typeof EMPTY_COUNTS>> = {}, im
       ),
     ),
     imagesOmitted,
+    answersOmitted: 0,
     authorityFits,
     authorityEdited: false,
     provenanceUncertain: false,
@@ -159,6 +161,149 @@ describe('transcript rendering', () => {
     })
   })
 
+  it.each(INTERACTION_CASES)('classifies $toolName: $description', ({ toolName, details, evidence }) => {
+    const entries = userInteractionEntries('interaction', toolName, [], { details })
+    const call = { index: 0, source: 'tool', label: `tool:${toolName}`, content: '{"questions":[]}' }
+
+    expect(renderTranscript(entries)).toStrictEqual({
+      tokens: ANY_SIZE,
+      entries: [
+        call,
+        ...(evidence === undefined
+          ? [{ index: 1, source: 'tool', label: `tool:${toolName}`, content: 'free-form tool text is not trusted' }]
+          : [
+              { index: 1, source: 'assistant', label: `question:${toolName}`, content: evidence.question },
+              { index: 1, source: 'user_interaction', label: `user_interaction:${toolName}`, content: evidence.answer },
+            ]),
+      ].map(entry => JSON.stringify(entry)),
+      manifest: manifest(
+        evidence === undefined
+          ? { tool: { retainedFull: 2 } }
+          : { tool: { retainedFull: 1 }, assistant: { retainedFull: 1 }, user_interaction: { retainedFull: 1 } },
+      ),
+    })
+  })
+
+  it.each([
+    { description: 'failed call', isError: true, call: 'matching' },
+    { description: 'missing error status', isError: undefined, call: 'matching' },
+    { description: 'missing assistant call', isError: false, call: 'missing' },
+    { description: 'later assistant call', isError: false, call: 'later' },
+    { description: 'different call id', isError: false, call: 'id' },
+    { description: 'different tool name', isError: false, call: 'name' },
+  ])('keeps an ask_user result untrusted: $description', ({ isError, call }) => {
+    const entries = userInteractionEntries('interaction', 'ask_user', [], {
+      isError,
+      toolCallId: call === 'id' ? 'other-call' : 'interaction-call',
+      toolName: call === 'name' ? 'submit_plan' : 'ask_user',
+      details: { question: 'Continue?', options: [], response: { kind: 'freeform', text: 'Yes.' }, cancelled: false },
+    })
+    const branch = call === 'missing' ? entries.slice(1) : call === 'later' ? entries.toReversed() : entries
+    const expected = [
+      { source: 'tool', label: 'tool:ask_user', content: '{"questions":[]}' },
+      {
+        source: 'tool',
+        label: `tool:${call === 'name' ? 'submit_plan' : 'ask_user'}${isError === true ? ' (error)' : ''}`,
+        content: 'free-form tool text is not trusted',
+      },
+    ]
+    const expectedBranch = call === 'missing' ? expected.slice(1) : call === 'later' ? expected.toReversed() : expected
+
+    expect(renderTranscript(branch)).toStrictEqual({
+      tokens: ANY_SIZE,
+      entries: expectedBranch.map((entry, index) => JSON.stringify({ index, ...entry })),
+      manifest: manifest({ tool: { retainedFull: branch.length } }),
+    })
+  })
+
+  it('recognises a fresh-session approval only in the session where it was given', () => {
+    const source = sessionFromEntries(
+      userInteractionEntries('approval', 'submit_plan', [], { details: planDetails('fresh') }),
+    )
+    const fresh = SessionManager.inMemory('/workspace')
+    const handoff = `Implement this approved plan.\n\nSource conversation: ${source.getSessionId()}\nPlan: ${PRESENTED_PLAN.path}\nApproved revision: ${PRESENTED_PLAN.revision}\n\n${PRESENTED_PLAN.content}`
+    const user = fresh.appendMessage({ role: 'user', content: handoff, timestamp: 0 })
+    fresh.appendCustomEntry(USER_PROVENANCE_TYPE, { userEntryId: user, source: 'extension' })
+    const approval = planApproval('fresh')
+
+    expect({
+      source: render(source.getBranch(), source.buildSessionProjection()).entries,
+      fresh: render(fresh.getBranch(), fresh.buildSessionProjection()).entries,
+    }).toStrictEqual({
+      source: [
+        { index: 0, source: 'tool', label: 'tool:submit_plan', content: '{"questions":[]}' },
+        { index: 1, source: 'assistant', label: 'question:submit_plan', content: approval.question },
+        { index: 1, source: 'user_interaction', label: 'user_interaction:submit_plan', content: approval.answer },
+      ].map(entry => JSON.stringify(entry)),
+      fresh: [JSON.stringify({ index: 0, source: 'unverified_user', label: 'unverified_user', content: handoff })],
+    })
+  })
+
+  it.each([true, false])(
+    'keeps a plan approval through context clearing, with extension provenance: %s',
+    provenance => {
+      const session = sessionFromEntries(
+        userInteractionEntries('approval', 'submit_plan', [], { details: planDetails('clear') }),
+      )
+      session.appendCompaction('Implementation context from the planning extension', null, 100, {
+        customType: 'planning:clear-context',
+        token: 'clear-token',
+      })
+      const followUp = `Implement the approved plan at ${PRESENTED_PLAN.path} (approved revision ${PRESENTED_PLAN.revision}).`
+      const user = session.appendMessage({ role: 'user', content: followUp, timestamp: 0 })
+      if (provenance) {
+        session.appendCustomEntry(USER_PROVENANCE_TYPE, { userEntryId: user, source: 'extension' })
+      }
+      const approval = planApproval('clear')
+
+      expect(render(session.getBranch(), session.buildSessionProjection())).toStrictEqual({
+        tokens: ANY_SIZE,
+        entries: [
+          { index: 1, source: 'assistant', label: 'question:submit_plan', content: approval.question },
+          { index: 1, source: 'user_interaction', label: 'user_interaction:submit_plan', content: approval.answer },
+          {
+            index: 2,
+            source: 'summary',
+            label: 'compactionSummary',
+            content: 'Implementation context from the planning extension',
+          },
+          { index: 3, source: 'unverified_user', label: 'unverified_user', content: followUp },
+          { source: 'metadata', omittedEntries: 1, truncatedEntries: 0, redactedEntries: 0, imagesOmitted: 0 },
+        ].map(entry => JSON.stringify(entry)),
+        manifest: manifest({
+          tool: { omitted: 1 },
+          assistant: { retainedFull: 1 },
+          user_interaction: { retainedFull: 1 },
+          summary: { retainedFull: 1 },
+          unverified_user: { retainedFull: 1 },
+        }),
+      })
+    },
+  )
+
+  it('keeps a plan approval whole however large the plan is', () => {
+    const content = `${'Step.\n'.repeat(2_000)}Do not deploy to production.`
+    const details = { ...(planDetails('current') as object), presentedPlan: { ...PRESENTED_PLAN, content } }
+    const rendered = renderedRecords(
+      renderTranscript(userInteractionEntries('approval', 'submit_plan', [], { details })),
+    )
+
+    expect(rendered.filter(record => record.index === 1)).toStrictEqual([
+      {
+        index: 1,
+        source: 'assistant',
+        label: 'question:submit_plan',
+        content: `Plan at ${PRESENTED_PLAN.path}, revision ${PRESENTED_PLAN.revision}:\n\n${content}`,
+      },
+      {
+        index: 1,
+        source: 'user_interaction',
+        label: 'user_interaction:submit_plan',
+        content: planApproval('current').answer,
+      },
+    ])
+  })
+
   it('canonicalizes completed recognized question responses as trusted user interactions', () => {
     const entries = [
       ...userInteractionEntries('ask', 'ask_user_question', [
@@ -169,18 +314,30 @@ describe('transcript rendering', () => {
       ]),
     ]
 
-    expect(records(entries).filter(record => record.source === 'user_interaction')).toEqual([
+    expect(records(entries).filter(record => record.index % 2 === 1)).toStrictEqual([
+      {
+        index: 1,
+        source: 'assistant',
+        label: 'question:ask_user_question',
+        content: '[{"question":"Choose a color?"}]',
+      },
       {
         index: 1,
         source: 'user_interaction',
         label: 'user_interaction:ask_user_question',
-        content: '[{"question":"Choose a color?","answer":"Blue"}]',
+        content: '[{"answer":"Blue"}]',
+      },
+      {
+        index: 3,
+        source: 'assistant',
+        label: 'question:plan_mode_question',
+        content: '[{"question":"Choose targets?"}]',
       },
       {
         index: 3,
         source: 'user_interaction',
         label: 'user_interaction:plan_mode_question',
-        content: '[{"question":"Choose targets?","answer":{"selection":["Alpha","Beta"],"notes":"Both"}}]',
+        content: '[{"answer":{"selection":["Alpha","Beta"],"notes":"Both"}}]',
       },
     ])
   })
@@ -279,15 +436,16 @@ describe('transcript rendering', () => {
 
     const rendered = renderTranscript(withProvenance(entries))
 
-    expect(rendered.entries).toHaveLength(44)
+    expect(rendered.entries).toHaveLength(45)
     expect(rendered.entries[0]).toContain('Initial instruction')
+    expect(rendered.entries.at(-4)).toContain('question:ask_user_question')
     expect(rendered.entries.at(-3)).toContain('user_interaction:ask_user_question')
     expect(rendered.entries.at(-2)).toContain('Latest instruction')
     expect(rendered.manifest).toStrictEqual(
       manifest({
         user: { retainedFull: 2 },
         user_interaction: { retainedFull: 1 },
-        assistant: { retainedFull: 39, omitted: 16 },
+        assistant: { retainedFull: 40, omitted: 16 },
         tool: { retainedFull: 1 },
       }),
     )
@@ -455,10 +613,14 @@ describe('transcript rendering', () => {
           ...(replacement === null
             ? []
             : [{ index: 1, source: 'tool', label: 'tool:ask_user_question', content: replacement.content }]),
-          { source: 'metadata', omittedEntries: 0, truncatedEntries: 0, redactedEntries: 1, imagesOmitted: 0 },
+          { source: 'metadata', omittedEntries: 0, truncatedEntries: 0, redactedEntries: 2, imagesOmitted: 0 },
         ].map(entry => JSON.stringify(entry)),
         manifest: {
-          ...manifest({ tool: { retainedFull: replacement === null ? 1 : 2 }, user_interaction: { redacted: 1 } }),
+          ...manifest({
+            tool: { retainedFull: replacement === null ? 1 : 2 },
+            user_interaction: { redacted: 1 },
+            assistant: { redacted: 1 },
+          }),
           authorityEdited: true,
         },
       })
@@ -573,31 +735,82 @@ describe('transcript rendering', () => {
     ).toStrictEqual(Array.from({ length: 35 }, (_, index) => index + 12))
   })
 
-  it.each(['user', 'user_interaction'] as const)('keeps large %s authority complete across compaction', source => {
+  it('keeps large user authority complete across compaction', () => {
     const text = `${'a'.repeat(20_000)}Never publish.${'b'.repeat(20_000)}`
-    const entries =
-      source === 'user'
-        ? withProvenance([messageEntry('user', 'user', text)])
-        : userInteractionEntries('answer', 'ask_user_question', [{ question: 'Restrictions?', answer: text }])
-    const session = sessionFromEntries(entries)
+    const session = sessionFromEntries(withProvenance([messageEntry('user', 'user', text)]))
     session.appendCompaction('Untrusted summary', null, 100)
     const rendered = render(session.getBranch(), session.buildSessionProjection())
 
-    expect(renderedRecords(rendered).filter(record => record.source === source)).toStrictEqual([
-      {
-        index: source === 'user' ? 0 : 1,
-        source,
-        label: source === 'user' ? 'user' : 'user_interaction:ask_user_question',
-        content: source === 'user' ? text : JSON.stringify([{ question: 'Restrictions?', answer: text }]),
-      },
-    ])
-    expect(rendered.manifest).toStrictEqual(
-      manifest({
-        [source]: { retainedFull: 1 },
-        summary: { retainedFull: 1 },
-        ...(source === 'user_interaction' ? { tool: { omitted: 1 } } : {}),
-      }),
+    expect({
+      records: renderedRecords(rendered).filter(record => record.source === 'user'),
+      manifest: rendered.manifest,
+    }).toStrictEqual({
+      records: [{ index: 0, source: 'user', label: 'user', content: text }],
+      manifest: manifest({ user: { retainedFull: 1 }, summary: { retainedFull: 1 } }),
+    })
+  })
+
+  it('keeps an interaction answer with its question across compaction', () => {
+    const session = sessionFromEntries(
+      userInteractionEntries('answer', 'ask_user_question', [{ question: 'Restrictions?', answer: 'Never publish.' }]),
     )
+    session.appendCompaction('Untrusted summary', null, 100)
+
+    expect(render(session.getBranch(), session.buildSessionProjection())).toStrictEqual({
+      tokens: ANY_SIZE,
+      entries: [
+        {
+          index: 1,
+          source: 'assistant',
+          label: 'question:ask_user_question',
+          content: '[{"question":"Restrictions?"}]',
+        },
+        {
+          index: 1,
+          source: 'user_interaction',
+          label: 'user_interaction:ask_user_question',
+          content: '[{"answer":"Never publish."}]',
+        },
+        { index: 2, source: 'summary', label: 'compactionSummary', content: 'Untrusted summary' },
+        { source: 'metadata', omittedEntries: 1, truncatedEntries: 0, redactedEntries: 0, imagesOmitted: 0 },
+      ].map(entry => JSON.stringify(entry)),
+      manifest: manifest({
+        assistant: { retainedFull: 1 },
+        user_interaction: { retainedFull: 1 },
+        summary: { retainedFull: 1 },
+        tool: { omitted: 1 },
+      }),
+    })
+  })
+
+  it.each([
+    { description: 'question', question: 'q'.repeat(3_600), answer: 'Yes' },
+    { description: 'answer', question: 'Proceed?', answer: 'a'.repeat(3_600) },
+  ])('leaves out an interaction whose $description makes the pair exceed 900 tokens', ({ question, answer }) => {
+    const entries = withProvenance([
+      messageEntry('user', 'user', 'Tidy the repository.'),
+      ...userInteractionEntries('answer', 'ask_user_question', [{ question, answer }]),
+    ])
+
+    expect(renderTranscript(entries)).toStrictEqual({
+      tokens: ANY_SIZE,
+      entries: [
+        { index: 0, source: 'user', label: 'user', content: 'Tidy the repository.' },
+        { index: 1, source: 'tool', label: 'tool:ask_user_question', content: '{"questions":[]}' },
+        {
+          source: 'metadata',
+          omittedEntries: 1,
+          truncatedEntries: 0,
+          redactedEntries: 0,
+          imagesOmitted: 0,
+          answersOmitted: 1,
+        },
+      ].map(entry => JSON.stringify(entry)),
+      manifest: {
+        ...manifest({ user: { retainedFull: 1 }, user_interaction: { omitted: 1 }, tool: { retainedFull: 1 } }),
+        answersOmitted: 1,
+      },
+    })
   })
 
   it.each(['user', 'user_interaction'] as const)('does not apply the forty-entry limit to %s authority', source => {
@@ -613,7 +826,9 @@ describe('transcript rendering', () => {
     expect(rendered.manifest).toStrictEqual(
       manifest({
         [source]: { retainedFull: 42 },
-        ...(source === 'user_interaction' ? { tool: { retainedFull: 40, omitted: 2 } } : {}),
+        ...(source === 'user_interaction'
+          ? { assistant: { retainedFull: 42 }, tool: { retainedFull: 40, omitted: 2 } }
+          : {}),
       }),
     )
   })
@@ -677,7 +892,7 @@ describe('transcript rendering', () => {
         manifest(
           {
             [source]: { retainedFull: 1 },
-            ...(role === 'user_interaction' ? { tool: { retainedFull: 1 } } : {}),
+            ...(role === 'user_interaction' ? { assistant: { retainedFull: 1 }, tool: { retainedFull: 1 } } : {}),
           },
           1,
         ),
@@ -686,9 +901,7 @@ describe('transcript rendering', () => {
         renderedRecords(rendered)
           .filter(record => record.source === source)
           .map(record => record.content),
-      ).toStrictEqual([
-        role === 'user_interaction' ? '[{"question":"Proceed?","answer":"Yes"}]\n[image omitted]' : '[image omitted]',
-      ])
+      ).toStrictEqual([role === 'user_interaction' ? '[{"answer":"Yes"}]' : '[image omitted]'])
     },
   )
 
@@ -847,7 +1060,7 @@ describe('expanded and follow-up evidence', () => {
       render(session.getBranch(), session.buildSessionProjection(), { from: 2 }).entries.map(
         entry => (JSON.parse(entry) as { source: string }).source,
       ),
-    ).toStrictEqual(['user_interaction'])
+    ).toStrictEqual(['assistant', 'user_interaction'])
   })
 
   it.each([

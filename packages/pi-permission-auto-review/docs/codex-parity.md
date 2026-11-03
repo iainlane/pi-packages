@@ -94,6 +94,35 @@ A follow-up review continues the earlier reviews' conversation with only what
 the session added. It starts over in full after a context edit or compaction,
 because either can change what the earlier reviews saw.
 
+## Interaction answers
+
+Codex treats the person's answers to its own question prompts as user evidence,
+and labels each question with the assistant role and each answer with the user
+role. Pi has no built-in question tool, so the `codex` preset recognises the
+results of specific tools: `ask_user` from pi-ask-user, `submit_plan` from the
+planning extension, and the earlier `ask_user_question` and
+`plan_mode_question`. A result counts as an answer only when the assistant
+called that tool with the same call id, the call succeeded, and the result
+details decode with the tool's schema. A cancelled question, a plan revision
+request and a cancelled plan review are not answers.
+
+The reviewer receives each answer as a `user_interaction` record and the
+question, context and options as an untrusted `assistant` record before it.
+The assistant wrote the questions and option descriptions, so they define what
+the answer responds to but cannot authorize anything themselves. As in Codex, a
+question and its answer are included whole or left out together: a pair larger
+than 900 tokens is left out, and the metadata record reports `answersOmitted`.
+
+A plan approval authorizes implementing the approved revision. Its question
+record contains the plan content from the tool result, whatever its size, so a
+later change to the plan file does not change what was approved. When the
+planning extension clears the context after an approval, the approval remains
+authority because it comes from the raw branch, and the extension's follow-up
+message is unverified. An older version of the planning extension hands an
+approved plan over to a fresh session instead. The approval then remains in the
+original session, and asks in the fresh session go to the person, because the
+reviewer reads only the current session.
+
 ## Provenance trust
 
 The records are ordinary custom entries. They are not signed, and nothing

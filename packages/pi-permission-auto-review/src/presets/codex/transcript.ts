@@ -2,6 +2,7 @@ import type { SessionEntry, SessionProjection } from '@earendil-works/pi-coding-
 import { sessionEntryToContextMessages } from '@earendil-works/pi-coding-agent'
 import { submittedTexts, uncertainUserEntries, verifiedUserEntries } from '../../provenance/provenance.js'
 import { approximateTokens, serializeUnknown, truncateToFit } from '../../text.js'
+import { INTERACTION_ADAPTERS } from './interactions.js'
 
 // Codex's synchronous profile: user evidence counts first against the message allowance and is never cut per entry
 const MAX_RECENT_UNTRUSTED_ENTRIES = 40
@@ -12,7 +13,9 @@ const MIN_RECENT_TOOL_ENTRIES = 5
 // restriction survives whole, and keeps at least the second number of tokens of each record that it shortens
 const SHORTENABLE_USER_TOKENS = 900
 const SHORTENED_MIN_TOKENS = 32
-const TRUSTED_USER_INTERACTION_TOOLS = new Set(['ask_user_question', 'plan_mode_question'])
+// Codex's limit for one question and its answer, which the review includes whole or leaves out
+const INTERACTION_TOKENS = 900
+const INTERACTION_TOOLS = new Map(INTERACTION_ADAPTERS.map(adapter => [adapter.toolName, adapter]))
 
 export type TranscriptSource =
   | 'user'
@@ -33,6 +36,11 @@ interface TranscriptEntry {
   text: string
   truncated?: boolean
   imagesOmitted?: number
+  /**
+   * Part of a recognised interaction. The review keeps a question with its answer, and never shortens a pair that is
+   * limited in size. An oversized pair is left out
+   */
+  interaction?: { part: 'question' | 'answer' | 'oversized'; limited: boolean }
 }
 
 /** What happened to the records of one source; redacted originals and their replacements are counted separately */
@@ -47,6 +55,8 @@ export interface EvidenceManifest {
   sources: Record<TranscriptSource, SourceManifest>
   /** Image blocks in the evidence, none of which the reviewer receives */
   imagesOmitted: number
+  /** Interaction answers that the review leaves out because the question and answer exceed the size limit */
+  answersOmitted: number
   /** Whether the user evidence fits the budget, if one applied, once its long records are shortened */
   authorityFits: boolean
   /** Whether a context edit removed or replaced user evidence */
@@ -94,13 +104,6 @@ interface MessageLike {
   details?: unknown
 }
 
-interface UserInteractionAnswer {
-  question?: unknown
-  answer?: unknown
-  selected?: unknown
-  notes?: unknown
-}
-
 function emptyManifest(): EvidenceManifest {
   const source = (): SourceManifest => ({ retainedFull: 0, retainedTruncated: 0, omitted: 0, redacted: 0 })
 
@@ -116,6 +119,7 @@ function emptyManifest(): EvidenceManifest {
       custom: source(),
     },
     imagesOmitted: 0,
+    answersOmitted: 0,
     authorityFits: true,
     authorityEdited: false,
     provenanceUncertain: false,
@@ -142,65 +146,50 @@ function textFromContent(content: unknown): string {
     .join('\n')
 }
 
-function normalizeAnswer(value: unknown): unknown {
-  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
-    return value
-  }
-
-  return Array.isArray(value) ? value.map(normalizeAnswer) : serializeUnknown(value)
-}
-
-function answerEvidence(answer: UserInteractionAnswer): unknown {
-  const primary =
-    answer.answer !== undefined && answer.answer !== null
-      ? normalizeAnswer(answer.answer)
-      : Array.isArray(answer.selected) && answer.selected.length > 0
-        ? answer.selected.map(normalizeAnswer)
-        : undefined
-  const notes = typeof answer.notes === 'string' && answer.notes.length > 0 ? answer.notes : undefined
-  if (primary === undefined || notes === undefined) {
-    return primary ?? notes
-  }
-
-  return { selection: primary, notes }
-}
-
 /**
- * Only a completed, non-cancelled answer to a question tool the assistant actually called counts, rebuilt from its
- * structured details so free-form tool text is never promoted to user evidence
+ * Only a completed, non-cancelled answer to an interaction tool that the assistant called counts. The adapter rebuilds
+ * it from the structured details, so free-form tool text is never promoted to user evidence
  */
-function userInteractionText(message: MessageLike, interactionCalls: ReadonlyMap<string, string>): string | undefined {
+function interactionRecords(
+  message: MessageLike,
+  index: number,
+  interactionCalls: ReadonlyMap<string, string>,
+): TranscriptEntry[] | undefined {
   const { toolName, toolCallId, details } = message
   if (
     typeof toolName !== 'string' ||
     typeof toolCallId !== 'string' ||
-    !TRUSTED_USER_INTERACTION_TOOLS.has(toolName) ||
     interactionCalls.get(toolCallId) !== toolName ||
-    message.isError !== false ||
-    details === null ||
-    typeof details !== 'object'
+    message.isError !== false
   ) {
     return undefined
   }
-  const { cancelled, answers } = details as { cancelled?: unknown; answers?: unknown }
-  if (cancelled !== false || !Array.isArray(answers) || answers.length === 0) {
+  const evidence = INTERACTION_TOOLS.get(toolName)?.render(details)
+  if (evidence === undefined) {
     return undefined
   }
 
-  const evidence: { question: string; answer: unknown }[] = []
-  for (const answer of answers) {
-    if (answer === null || typeof answer !== 'object') {
-      return undefined
-    }
-    const { question } = answer as UserInteractionAnswer
-    const value = answerEvidence(answer as UserInteractionAnswer)
-    if (typeof question !== 'string' || question.length === 0 || value === undefined) {
-      return undefined
-    }
-    evidence.push({ question, answer: value })
+  const { limited } = evidence
+  const question: TranscriptEntry = {
+    index,
+    kind: 'assistant',
+    label: `question:${toolName}`,
+    text: evidence.question,
+    interaction: { part: 'question', limited },
+  }
+  const answer: TranscriptEntry = {
+    index,
+    kind: 'user_interaction',
+    label: `user_interaction:${toolName}`,
+    text: evidence.answer,
+    interaction: { part: 'answer', limited },
+  }
+  const tokens = approximateTokens(renderEntry(question)) + approximateTokens(renderEntry(answer))
+  if (limited && tokens > INTERACTION_TOKENS) {
+    return [{ ...answer, text: '', interaction: { part: 'oversized', limited } }]
   }
 
-  return JSON.stringify(evidence)
+  return [question, answer]
 }
 
 function toolCallName(block: ContentBlock): string {
@@ -236,7 +225,7 @@ function entriesFromMessage(
           return []
         }
         const name = toolCallName(block)
-        if (typeof block.id === 'string' && TRUSTED_USER_INTERACTION_TOOLS.has(name)) {
+        if (typeof block.id === 'string' && INTERACTION_TOOLS.has(name)) {
           interactionCalls.set(block.id, name)
         }
 
@@ -247,11 +236,9 @@ function entriesFromMessage(
     }
     case 'toolResult': {
       const name = typeof message.toolName === 'string' ? message.toolName : 'unknown'
-      const interaction = userInteractionText(message, interactionCalls)
+      const interaction = interactionRecords(message, index, interactionCalls)
       if (interaction !== undefined) {
-        const markers = Array.from<string>({ length: imagesOmitted }).fill('[image omitted]')
-
-        return entry('user_interaction', `user_interaction:${name}`, [interaction, ...markers].join('\n'))
+        return interaction.map((record, position) => (position === 0 ? { ...record, imagesOmitted } : record))
       }
 
       return entry(
@@ -279,8 +266,14 @@ function entriesFromMessage(
   }
 }
 
-function isRequiredEvidence(entry: TranscriptEntry): boolean {
+/** User messages and interaction answers, including answers that are too large to include */
+function isAuthority(entry: TranscriptEntry): boolean {
   return entry.kind === 'user' || entry.kind === 'user_interaction'
+}
+
+/** The authority that the review includes in full, and the questions that the answers respond to */
+function isRequiredEvidence(entry: TranscriptEntry): boolean {
+  return entry.interaction?.part !== 'oversized' && (isAuthority(entry) || entry.interaction?.part === 'question')
 }
 
 /**
@@ -320,7 +313,7 @@ function collectEntries(
     }
     const edit = edits.get(entry.id)
     if (edit !== undefined) {
-      if (raw.some(isRequiredEvidence)) {
+      if (raw.some(isAuthority)) {
         manifest.authorityEdited = true
       }
       for (const record of raw) {
@@ -331,11 +324,11 @@ function collectEntries(
       }
     }
 
-    if (edit === undefined && raw.some(isRequiredEvidence)) {
+    if (edit === undefined && raw.some(isAuthority)) {
       if (projected.has(entry.id)) {
         recordsById.set(entry.id, raw)
       } else {
-        restoredEvidence.push(...raw.filter(isRequiredEvidence))
+        restoredEvidence.push(...raw.filter(record => isAuthority(record) || record.interaction !== undefined))
       }
       continue
     }
@@ -435,7 +428,7 @@ export function renderTranscript(
     return true
   }
 
-  const recent = all.filter(entry => !isRequiredEvidence(entry)).toReversed()
+  const recent = all.filter(entry => !isAuthority(entry) && entry.interaction === undefined).toReversed()
   const requiredTools = recent.filter(entry => entry.kind === 'tool').slice(0, MIN_RECENT_TOOL_ENTRIES)
   for (const entry of requiredTools) {
     take(entry)
@@ -452,6 +445,9 @@ export function renderTranscript(
 
   for (const entry of all) {
     manifest.imagesOmitted += entry.imagesOmitted ?? 0
+    if (entry.interaction?.part === 'oversized') {
+      manifest.answersOmitted += 1
+    }
     const counts = manifest.sources[entry.kind]
     if (!selected.has(entry)) {
       counts.omitted += 1
@@ -469,6 +465,7 @@ export function renderTranscript(
     truncatedEntries: counts.reduce((total, source) => total + source.retainedTruncated, 0),
     redactedEntries: counts.reduce((total, source) => total + source.redacted, 0),
     imagesOmitted: manifest.imagesOmitted,
+    ...(manifest.answersOmitted > 0 ? { answersOmitted: manifest.answersOmitted } : {}),
   }
   if (omission.omittedEntries + omission.truncatedEntries + omission.redactedEntries + omission.imagesOmitted > 0) {
     entries.push(JSON.stringify(omission))
@@ -488,6 +485,7 @@ export function manifestFields(manifest: EvidenceManifest): Record<string, numbe
   return {
     ...Object.fromEntries<number>(counts),
     imagesOmitted: manifest.imagesOmitted,
+    answersOmitted: manifest.answersOmitted,
     authorityFits: manifest.authorityFits,
     authorityEdited: manifest.authorityEdited,
     provenanceUncertain: manifest.provenanceUncertain,
