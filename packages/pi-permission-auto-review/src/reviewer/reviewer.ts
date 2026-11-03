@@ -27,7 +27,9 @@ export interface ReviewerRuntime {
   actions: Pick<ActionCapture, 'resolve' | 'registryDigest'>
   provenance: Pick<UserMessageProvenance, 'flush'>
   /** Read at every review, since `signal` belongs to the turn in progress */
-  context: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal'>
+  context: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal' | 'abort' | 'hasUI'> & {
+    ui: Pick<ExtensionContext['ui'], 'notify'>
+  }
   /** The context files the user's trust covers, as of the latest run */
   contextFiles: () => readonly ContextFile[]
   /** Aborted when the reviewer is replaced, the session ends or the session moves to other history; read at every review */
@@ -166,6 +168,28 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
       log.review(DECISION_EVENT, entry)
       log.debug('auto_review.failure', entry)
     }
+    const refuseOpenCircuit = (reason: string): AuthorizerVerdict => {
+      log.review('auto_review.circuit_open', {
+        ...entryBase,
+        outcome: 'deny',
+        durationMs: elapsed(),
+        errorCategory: 'circuit-open',
+      })
+
+      return { kind: 'deny', reason }
+    }
+    // As Codex does, stop the agent instead of letting it look for a way around denial after denial
+    const interruptTurn = (reason: string): void => {
+      try {
+        if (runtime.context.hasUI) {
+          runtime.context.ui.notify(reason, 'warning')
+        } else {
+          log.review('auto_review.circuit_tripped', { warning: reason })
+        }
+      } finally {
+        runtime.context.abort()
+      }
+    }
 
     try {
       const resolved = runtime.actions.resolve(details, runtime.context.sessionManager.getSessionId())
@@ -182,17 +206,15 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
       const { action } = resolved
       const refusal = limiter.refusal()
       if (refusal !== undefined) {
-        log.review('auto_review.circuit_open', {
-          ...entryBase,
-          outcome: 'deny',
-          durationMs: 0,
-          errorCategory: 'circuit-open',
-        })
-
-        return { kind: 'deny', reason: refusal }
+        return refuseOpenCircuit(refusal)
       }
 
       const result = await runReview(runtime, preset, details, conversation)
+      // Another review tripped the circuit while this one ran
+      const lateRefusal = limiter.refusal()
+      if (lateRefusal !== undefined) {
+        return refuseOpenCircuit(lateRefusal)
+      }
       const durationMs = elapsed()
       const diagnostics = {
         policyRevision: preset.policyRevision,
@@ -226,10 +248,16 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         return { kind: 'allow' }
       }
       const denialLimit = limiter.recordDenial()
-      if (denialLimit !== undefined) {
+      if (denialLimit !== undefined && limiter.limitAction === 'prompt') {
         log.review(DECISION_EVENT, { ...entryBase, outcome: 'defer', denialLimit, durationMs, ...diagnostics })
 
         return { kind: 'defer' }
+      }
+      if (denialLimit !== undefined) {
+        interruptTurn(limiter.refusal() ?? result.reason)
+        log.review(DECISION_EVENT, { ...entryBase, outcome: 'deny', denialLimit, durationMs, ...diagnostics })
+
+        return { kind: 'deny', reason: result.reason }
       }
       log.review(DECISION_EVENT, { ...entryBase, outcome: 'deny', durationMs, ...diagnostics })
 

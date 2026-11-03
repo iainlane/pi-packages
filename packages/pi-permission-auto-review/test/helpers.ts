@@ -193,6 +193,10 @@ interface ReviewerHarness {
   branch: SessionEntry[]
   /** The digest that the action capture reports for the registered tools */
   registryDigest: string
+  /** Whether the reviewer called the context's `abort`, which ends the agent's turn */
+  readonly turnAborted: boolean
+  /** Every message shown with `ui.notify`, with its type */
+  notified: [string, string | undefined][]
   resetTurn: () => void
   streamSimple: Mock<StreamSimple>
   callTimes: number[]
@@ -213,6 +217,8 @@ interface ReviewerHarnessOptions {
   turnSignal?: AbortSignal
   contextWindow?: number
   thinkingLevelMap?: ThinkingLevelMap
+  /** Whether the session has a UI to show warnings in; true by default */
+  hasUI?: boolean
   /** What the action capture answers for each ask; by default the bash command that the ask names */
   resolve?: (details: PromptPermissionDetails) => ActionResolution
 }
@@ -246,6 +252,8 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
     streamSimple,
   } as unknown as ModelRegistry
   const state = { registryDigest: 'registry-1' }
+  const turn = new AbortController()
+  const notified: [string, string | undefined][] = []
   const reviewer = createPermissionReviewer({
     config: mergeConfig({}, { provider: 'custom-review', model: 'review-model', ...options.config }),
     actions: {
@@ -263,6 +271,9 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
         getLeafId: () => branch.at(-1)?.id ?? null,
       },
       signal: options.turnSignal,
+      abort: () => turn.abort(),
+      hasUI: options.hasUI ?? true,
+      ui: { notify: (message: string, type?: string) => notified.push([message, type]) },
     } as never,
     provenance: { flush: () => {} },
     contextFiles: () => [],
@@ -287,6 +298,10 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
     set registryDigest(digest: string) {
       state.registryDigest = digest
     },
+    get turnAborted() {
+      return turn.signal.aborted
+    },
+    notified,
     resetTurn: reviewer.resetTurn,
     streamSimple,
     callTimes,

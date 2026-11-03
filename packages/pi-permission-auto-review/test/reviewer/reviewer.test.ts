@@ -273,16 +273,72 @@ describe('permission reviewer', () => {
     expect(throwing.entries[0]?.[1]).toMatchObject({ errorCategory: 'internal-error' })
   })
 
-  it('refuses unreviewed for the rest of the turn after three consecutive denials', async () => {
+  it('denies the third consecutive denial with its reason, warns once and interrupts the turn', async () => {
     const harness = createHarness({ replies: [reply(DENY), reply(DENY), reply(DENY)] })
-    for (let index = 0; index < 3; index += 1) {
-      await harness.authorize(`request-${index}`)
+    const results = []
+    for (let index = 0; index < 4; index += 1) {
+      results.push(await harness.authorize(`request-${index}`))
     }
-    const { verdict, entries } = await harness.authorize('request-3')
 
-    expect(verdict.kind === 'deny' ? verdict.reason : undefined).toContain('explicit approval')
-    expect(entries[0]?.[0]).toBe('auto_review.circuit_open')
-    expect(harness.streamSimple).toHaveBeenCalledTimes(3)
+    expect({
+      verdicts: results.map(({ verdict }) => (verdict.kind === 'deny' ? verdict.reason?.split('.')[0] : verdict.kind)),
+      events: results.map(({ entries }) => [entries[0]?.[0], entries[0]?.[1]?.['denialLimit']]),
+      notified: harness.notified,
+      turnAborted: harness.turnAborted,
+    }).toStrictEqual({
+      verdicts: [
+        'Publishing was not authorized',
+        'Publishing was not authorized',
+        'Publishing was not authorized',
+        'Too many denials this turn; further requests are refused unreviewed until the next turn',
+      ],
+      events: [
+        ['auto_review.decision', undefined],
+        ['auto_review.decision', undefined],
+        ['auto_review.decision', 'consecutive'],
+        ['auto_review.circuit_open', undefined],
+      ],
+      notified: [
+        [
+          'Too many denials this turn; further requests are refused unreviewed until the next turn. Ask the user for explicit approval before retrying',
+          'warning',
+        ],
+      ],
+      turnAborted: true,
+    })
+  })
+
+  it('logs the warning instead when the session has no UI', async () => {
+    const harness = createHarness({ hasUI: false, replies: [reply(DENY), reply(DENY), reply(DENY)] })
+    const results = []
+    for (let index = 0; index < 3; index += 1) {
+      results.push(await harness.authorize(`request-${index}`))
+    }
+
+    expect({
+      tripped: results[2]?.entries.map(([event]) => event),
+      notified: harness.notified,
+      turnAborted: harness.turnAborted,
+    }).toStrictEqual({
+      tripped: ['auto_review.circuit_tripped', 'auto_review.decision'],
+      notified: [],
+      turnAborted: true,
+    })
+  })
+
+  it('denies a review that finishes with an allow after the circuit tripped', async () => {
+    const pending = Promise.withResolvers<AssistantMessage>()
+    const harness = createHarness({ replies: [pending.promise, reply(DENY), reply(DENY), reply(DENY)] })
+    const slow = harness.start('request-slow')
+    for (let index = 0; index < 3; index += 1) {
+      await harness.start(`request-${index}`).verdict
+    }
+    pending.resolve(reply(ALLOW))
+
+    expect({ verdict: (await slow.verdict).kind, event: slow.entries[0]?.[0] }).toStrictEqual({
+      verdict: 'deny',
+      event: 'auto_review.circuit_open',
+    })
   })
 
   it('refuses after ten denials in the recent window too, until the next turn', async () => {

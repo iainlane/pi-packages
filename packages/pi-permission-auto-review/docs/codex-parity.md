@@ -61,6 +61,11 @@ process and records these facts.
   the `codex` preset builds its evidence.
 - A verdict applies only if the session still matches what the review read.
   See [freshness](#freshness).
+- As in Codex, three denials in a row or ten among the last fifty reviews
+  interrupt the agent's turn with `ctx.abort()`, and later asks in the same run
+  are refused without review. Codex counts denials across everything the agent
+  does for one prompt. Pi starts a turn before every model response, so the
+  count starts again when an agent run starts or settles, not at each turn.
 
 ## Context edits and compaction
 

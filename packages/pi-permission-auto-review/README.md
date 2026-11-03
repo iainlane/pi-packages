@@ -38,6 +38,8 @@ With the `codex` preset, only messages that the person sent from the interactive
 
 The `codex` preset shows the reviewer every user message in full, including ones that compaction removed from the agent's context. When a long session would not fit the reviewer model, other records are left out first, and then user messages longer than 900 tokens are shortened, oldest first. A review defers when a context edit removed or replaced a user message. See [context edits and compaction][context-edits].
 
+With the `codex` preset, three denials in a row, or ten among the last fifty reviews, stop the agent, as in Codex: the ask that reaches the limit is denied with its review's reason, the extension shows a warning and interrupts the turn, and any further ask before the run ends is refused without review. The count starts again with the next agent run. The `claude-code` preset instead hands the ask that reaches its limit to the human prompt.
+
 [context-edits]: docs/codex-parity.md#context-edits-and-compaction
 [provenance-trust]: docs/codex-parity.md#provenance-trust
 

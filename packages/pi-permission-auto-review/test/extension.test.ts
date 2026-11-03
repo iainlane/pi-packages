@@ -100,7 +100,9 @@ describe('permission auto-review extension', () => {
         getSessionId: () => SESSION_ID,
         getLeafId: () => null,
       },
-      ui: { setStatus },
+      ui: { setStatus, notify: vi.fn() },
+      hasUI: true,
+      abort: vi.fn(),
       isProjectTrusted: () => projectTrusted,
     }
     const notify = vi.fn()
@@ -294,6 +296,36 @@ describe('permission auto-review extension', () => {
       }).toStrictEqual({ cancelled: ['deny', 'cancelled'], next: 'deny' })
     },
   )
+
+  it('resets the circuit when the next agent run starts or the run settles, not at each turn', async () => {
+    const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(registerAuthorizer)
+    const harness = start()
+    harness.start()
+    harness.ready()
+    const authorize = registerAuthorizer.mock.calls[0]?.[1]
+    const trip = async (): Promise<void> => {
+      for (let denial = 0; denial < 3; denial += 1) {
+        await review(authorize)
+      }
+    }
+    const event = async (): Promise<unknown> => (await review(authorize)).entry?.[0]
+
+    await trip()
+    harness.emit('turn_start', {}, {})
+    const afterTurn = await event()
+    harness.emit('before_agent_start', { systemPromptOptions: {} }, { isProjectTrusted: () => true })
+    const afterRun = await event()
+    await trip()
+    harness.emit('agent_settled', {}, {})
+    const afterSettled = await event()
+
+    expect([afterTurn, afterRun, afterSettled]).toStrictEqual([
+      'auto_review.circuit_open',
+      'auto_review.decision',
+      'auto_review.decision',
+    ])
+  })
 
   it('hot-swaps the reviewer generation after a config reset, closing the circuit', async () => {
     const global = configPath(workspace.cwd, 'global')

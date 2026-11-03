@@ -5,6 +5,7 @@ const MAX_TOTAL_DENIALS = 20
 
 /** Hands the denial that reaches a limit to the human prompt, then counts that limit afresh */
 export class DenialCounter implements DenialLimiter {
+  readonly limitAction = 'prompt'
   private consecutiveDenials = 0
   private totalDenials = 0
 

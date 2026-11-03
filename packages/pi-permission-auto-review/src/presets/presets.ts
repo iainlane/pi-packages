@@ -43,8 +43,10 @@ export type DenialLimit = 'consecutive' | 'total'
 export interface DenialLimiter {
   /** Why every ask is refused unreviewed, while that holds */
   refusal: () => string | undefined
-  /** The limit this denial reached, which hands its ask to the human prompt instead */
+  /** The limit this denial reached, if any */
   recordDenial: () => DenialLimit | undefined
+  /** What reaching a limit does: hand that ask to the human prompt, or deny it and interrupt the agent's turn */
+  limitAction: 'prompt' | 'interrupt'
   recordNonDenial: () => void
   resetTurn: () => void
 }

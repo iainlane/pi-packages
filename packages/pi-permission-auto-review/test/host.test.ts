@@ -52,6 +52,12 @@ interface HostOptions {
   probePosition?: 'before' | 'after'
   reviewPosition?: 'before' | 'after'
   prompt?: string
+  /** Further calls, each in its own model response after the first */
+  successiveCalls?: ToolCall[]
+  /** The reviewer's reply to each review in turn; an allow by default */
+  verdicts?: string[]
+  /** Whether the agent's turn ends early, after the model response with the last call */
+  interrupted?: boolean
 }
 
 interface ReviewEvidence {
@@ -204,6 +210,9 @@ describe('auto-review in the Pi host', () => {
     probePosition,
     reviewPosition = 'before',
     prompt = 'Perform the scripted action.',
+    successiveCalls = [],
+    verdicts = ['{"outcome":"allow"}'],
+    interrupted = false,
   }: HostOptions) {
     mkdirSync(workspace.cwd, { recursive: true })
     workspace.cwd = realpathSync(workspace.cwd)
@@ -231,18 +240,22 @@ describe('auto-review in the Pi host', () => {
     const prompts: string[] = []
     const events: unknown[] = []
     const errors: unknown[] = []
-    main.setResponses([fauxAssistantMessage(call, { stopReason: 'toolUse' }), fauxAssistantMessage(fauxText('Done.'))])
-    reviewer.setResponses([
-      context => {
+    const calls = [call, ...successiveCalls]
+    main.setResponses([
+      ...calls.map(toolCall => fauxAssistantMessage(toolCall, { stopReason: 'toolUse' })),
+      fauxAssistantMessage(fauxText('Done.')),
+    ])
+    reviewer.setResponses(
+      verdicts.map(verdict => context => {
         for (const message of context.messages) {
           if (message.role === 'user' && typeof message.content === 'string') {
             prompts.push(message.content)
           }
         }
 
-        return fauxAssistantMessage(fauxText('{"outcome":"allow"}'))
-      },
-    ])
+        return fauxAssistantMessage(fauxText(verdict))
+      }),
+    )
     const observedServices = new Set<string>()
     const spyRegistration: ExtensionFactory = pi => {
       pi.events.on(PERMISSIONS_READY_CHANNEL, data => {
@@ -347,13 +360,14 @@ describe('auto-review in the Pi host', () => {
     expect({ errors, loadErrors: extensionsResult.errors, mainCalls: main.state.callCount }).toStrictEqual({
       errors: [],
       loadErrors: [],
-      mainCalls: 2,
+      mainCalls: calls.length + (interrupted ? 0 : 1),
     })
+    const refused = deny || interrupted || reviewPosition === 'after'
     expect(
       session.messages
         .filter(message => message.role === 'toolResult')
         .map(message => ({ toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError })),
-    ).toStrictEqual([{ toolCallId: call.id, toolName: call.name, isError: deny || reviewPosition === 'after' }])
+    ).toStrictEqual(calls.map(toolCall => ({ toolCallId: toolCall.id, toolName: toolCall.name, isError: refused })))
 
     return { details, prompts, events, reviewerCalls: reviewer.state.callCount }
   }
@@ -601,6 +615,25 @@ describe('auto-review in the Pi host', () => {
       decisions: [{ event: 'auto_review.decision', outcome: 'defer', errorCategory: 'authority-edited' }],
       executed: false,
     })
+  })
+
+  it('interrupts the turn on the third denial in a row, before the denied call runs', async () => {
+    const calls = Array.from({ length: 3 }, (_, index) =>
+      fauxToolCall('write', { path: 'denied.txt', content: 'must not execute' }, { id: `denied-${index}` }),
+    )
+    const deny = '{"outcome":"deny","rationale":"Not authorized."}'
+    const result = await runHost({
+      call: calls[0]!,
+      successiveCalls: calls.slice(1),
+      verdicts: [deny, deny, deny],
+      interrupted: true,
+    })
+
+    expect({
+      requests: result.details.map(request => request.toolCallId),
+      reviews: result.reviewerCalls,
+      written: existsSync(join(workspace.cwd, 'denied.txt')),
+    }).toStrictEqual({ requests: calls.map(toolCall => toolCall.id), reviews: 3, written: false })
   })
 
   it('does not review or execute a deterministically denied command', async () => {

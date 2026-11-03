@@ -33,7 +33,7 @@ type Tally = Record<AuthorizerVerdict['kind'], number>
 /** One reviewer per applied config, so a config change swaps the registered link without a reload */
 interface Generation {
   /** The session's live context: `signal` and `ui` are read when used, not when the generation is made */
-  runtime: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal' | 'ui'>
+  runtime: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal' | 'ui' | 'abort' | 'hasUI'>
   config: AutoReviewConfig | undefined
   controller: AbortController
   /** Its controller is replaced each time the session moves to other history, which ends the reviews in progress */
@@ -219,6 +219,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   // Pi loads a project's AGENTS.md and CLAUDE.md whether or not it trusts the project, and a cloned repository
   // could use them to vouch for its own actions
   pi.on('before_agent_start', (event, ctx) => {
+    generation?.resetTurn()
     const agentDir = resolve(getAgentDir())
     const projectTrusted = ctx.isProjectTrusted()
     contextFiles = (event.systemPromptOptions.contextFiles ?? []).filter(
@@ -226,7 +227,9 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     )
   })
 
-  pi.on('turn_start', () => {
+  // Pi starts a turn before every model response, but Codex counts denials across everything the agent does for one
+  // prompt. Retries and continuations start turns without `before_agent_start`
+  pi.on('agent_settled', () => {
     generation?.resetTurn()
   })
 
