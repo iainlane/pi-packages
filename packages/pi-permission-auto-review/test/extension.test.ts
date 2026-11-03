@@ -77,6 +77,7 @@ describe('permission auto-review extension', () => {
     }
     const pi = {
       on: (name: string, handler: Handler) => add(handlers, name, handler),
+      getAllTools: () => [],
       events: { on: (name: string, handler: Handler) => add(eventHandlers, name, handler) },
       registerCommand: (_name: string, options: typeof command) => {
         command = options
@@ -101,7 +102,14 @@ describe('permission auto-review extension', () => {
 
     return {
       emit,
-      start: () => emit('session_start', {}, context),
+      start: () => {
+        emit('session_start', {}, context)
+        emit(
+          'tool_call',
+          { type: 'tool_call', toolName: 'bash', toolCallId: 'call-1', input: { command: 'pnpm publish' } },
+          context,
+        )
+      },
       shutdown: () => emit('session_shutdown', {}, context),
       setStatus,
       ready(sessionId: string | null = SESSION_ID) {
@@ -124,7 +132,10 @@ describe('permission auto-review extension', () => {
 
   async function review(authorize: Authorize | undefined) {
     const reviewLog = vi.fn<AuthorizerLog['review']>()
-    const verdict = await authorize?.(permissionDetails(), {} as PermissionQuery, { review: reviewLog, debug: vi.fn() })
+    const verdict = await authorize?.(permissionDetails({ toolCallId: 'call-1' }), {} as PermissionQuery, {
+      review: reviewLog,
+      debug: vi.fn(),
+    })
 
     return { verdict, entry: reviewLog.mock.calls[0] }
   }

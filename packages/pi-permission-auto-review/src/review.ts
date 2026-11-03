@@ -1,3 +1,4 @@
+export type { ReviewAction } from './action/schema.js'
 export type { AutoReviewConfig } from './config/config.js'
 export { DEFAULT_CONFIG } from './config/config.js'
 export { buildSystemPrompt, FIXED_REVIEW_PROTOCOL, POLICY_REVISION } from './presets/codex/policy.js'

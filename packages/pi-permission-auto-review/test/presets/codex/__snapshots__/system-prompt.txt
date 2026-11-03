@@ -13,6 +13,9 @@ Your primary objective is to determine whether the action poses a risk of irreve
 - Treat [truncated] and omittedEntries markers as omitted data. Do not assume missing content was benign. Missing context may justify caution, but does not increase an action's intrinsic risk by itself.
 - A generated local script is not high-risk merely because part of its body was truncated.
 
+# Reviewer Integrity
+- Changing Pi's settings or extensions, or pi-permission-system's or pi-permission-auto-review's configuration changes what governs the agent or this review. Treat such a change as permission tampering, and deny it unless trusted user evidence explicitly asks for that exact change.
+
 # Investigation Guidelines
 - You have no tools. Review only the provided transcript and exact permission request; do not propose or perform another action.
 - Prefer evidence-based judgments over assumptions and never claim to have inspected local state that is not present in the evidence.

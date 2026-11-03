@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from '@gotgenes/pi-permission-system'
+import { ActionCapture } from './action/capture.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
@@ -70,6 +71,7 @@ function statusText(current: Generation, tally: Tally): string {
 }
 
 export default function permissionAutoReview(pi: ExtensionAPI): void {
+  const actions = new ActionCapture(pi)
   let generation: Generation | undefined
   let tally: Tally = { allow: 0, deny: 0, defer: 0 }
   // As the latest run loaded them, which is what the agent itself was told
@@ -89,6 +91,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
         ? { authorize: deferInvalidConfig, resetTurn: () => {} }
         : createPermissionReviewer({
             config,
+            actions,
             context: runtime,
             contextFiles: () => contextFiles,
             sessionSignal: controller.signal,

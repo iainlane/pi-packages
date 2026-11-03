@@ -1,7 +1,8 @@
+import type { ReviewAction } from '../../../src/action/schema.js'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
 import { expect, it } from 'vitest'
 import { renderTranscript } from '../../../src/presets/claude-code/transcript.js'
-import { permissionDetails } from '../../helpers.js'
+import { permissionDetails, writeAction } from '../../helpers.js'
 
 function entry(id: string, message: Record<string, unknown>): SessionEntry {
   return { type: 'message', id, parentId: null, timestamp: '2026-07-23T00:00:00.000Z', message } as SessionEntry
@@ -156,4 +157,24 @@ it('drops the oldest calls before any user line when the transcript runs long, a
   expect(rendered.lines.at(-2)).toBe('{"user":"Go on."}')
   expect(rendered.lines.at(-1)).toBe('{"bash":{"command":"ls -la"},"id":"32.0"}')
   expect(rendered.stats.transcriptLinesOmitted).toBeGreaterThan(0)
+})
+
+it('shows the captured input as the action, for a nested call too', () => {
+  const branch = [
+    user('u1', 'Write the notes.'),
+    assistant('a1', '', [['parent', 'codemode', { code: 'await tools.write(notes)' }]]),
+  ]
+  const nested = writeAction('notes.md', 'the complete notes', 'parent/1')
+  const direct = writeAction('notes.md', 'the captured content', 'c1')
+  const directBranch = [user('u1', 'Write the notes.'), assistant('a1', '', [['c1', 'write', { path: 'notes.md' }]])]
+  const render = (entries: SessionEntry[], toolCallId: string, action: ReviewAction) =>
+    renderTranscript(entries, permissionDetails({ toolCallId }), undefined, action).lines.at(-1)
+
+  expect({
+    nested: render(branch, 'parent/1', nested),
+    direct: render(directBranch, 'c1', direct),
+  }).toStrictEqual({
+    nested: '{"write":{"path":"notes.md","content":"the complete notes"}}',
+    direct: '{"write":{"path":"notes.md","content":"the captured content"},"id":"1.0"}',
+  })
 })

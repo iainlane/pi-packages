@@ -1,6 +1,6 @@
 import type { FauxProviderRegistration, ToolCall } from '@earendil-works/pi-ai'
-import type { AgentSession, ExtensionFactory } from '@earendil-works/pi-coding-agent'
-import type { PermissionState, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
+import type { AgentSession, ExtensionFactory, ToolInfo } from '@earendil-works/pi-coding-agent'
+import type { PermissionState, PermissionsReadyEvent, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
@@ -17,8 +17,9 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent'
-import { getPermissionsService } from '@gotgenes/pi-permission-system'
+import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from '@gotgenes/pi-permission-system'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { inputDigest, projectSdkJson } from '../src/action/json.js'
 import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
 import { useWorkspace, writeFile } from './helpers.js'
@@ -49,6 +50,7 @@ interface HostOptions {
   extensionFactory?: ExtensionFactory
   permission?: Record<string, PermissionState | Record<string, PermissionState>>
   probePosition?: 'before' | 'after'
+  reviewPosition?: 'before' | 'after'
 }
 
 interface ReviewEvidence {
@@ -159,8 +161,48 @@ describe('auto-review in the Pi host', () => {
   })
 
   const workspace = useWorkspace()
+  let registrations: ToolInfo[] = []
 
-  async function runHost({ call, deny = false, extensionFactory, permission, probePosition }: HostOptions) {
+  function action(toolName: string, input: Record<string, unknown>, toolCallId: string, parentToolCallId?: string) {
+    const tool = registrations.find(entry => entry.name === toolName)
+    if (tool === undefined) {
+      throw new Error(`No registration for ${toolName}`)
+    }
+    const kind =
+      toolName === 'bash'
+        ? 'shell'
+        : toolName === 'write'
+          ? 'file-write'
+          : toolName.startsWith('mcp__')
+            ? 'mcp'
+            : 'tool'
+
+    return {
+      kind,
+      toolName,
+      toolCallId,
+      ...(parentToolCallId === undefined ? {} : { parentToolCallId }),
+      input,
+      cwd: '<cwd>',
+      registration: {
+        sourceInfo: Object.fromEntries(Object.entries(tool.sourceInfo).filter(([, value]) => value !== undefined)),
+        parametersDigest: inputDigest(projectSdkJson(tool.parameters)),
+      },
+      ...(toolName === 'write' ? { resolvedPath: `<cwd>/${String(input['path'])}` } : {}),
+      ...(kind === 'mcp'
+        ? { server: 'fixture', tool: 'lookup', connectorMetadata: 'unavailable', accountMetadata: 'unavailable' }
+        : {}),
+    }
+  }
+
+  async function runHost({
+    call,
+    deny = false,
+    extensionFactory,
+    permission,
+    probePosition,
+    reviewPosition = 'before',
+  }: HostOptions) {
     mkdirSync(workspace.cwd, { recursive: true })
     workspace.cwd = realpathSync(workspace.cwd)
     const agentDir = getAgentDir()
@@ -199,12 +241,21 @@ describe('auto-review in the Pi host', () => {
         return fauxAssistantMessage(fauxText('{"outcome":"allow"}'))
       },
     ])
-    const observe: ExtensionFactory = pi => {
-      pi.on('session_start', (_event, ctx) => {
-        const service = getPermissionsService(ctx.sessionManager.getSessionId())
+    const observedServices = new Set<string>()
+    const spyRegistration: ExtensionFactory = pi => {
+      pi.events.on(PERMISSIONS_READY_CHANNEL, data => {
+        const ready = data as PermissionsReadyEvent
+        if (ready.sessionId === null) {
+          return
+        }
+        const service = getPermissionsService(ready.sessionId)
         if (service === undefined) {
           throw new Error('The permission service was not published')
         }
+        if (observedServices.has(ready.sessionId)) {
+          return
+        }
+        observedServices.add(ready.sessionId)
         const register = service.registerAuthorizer.bind(service)
         vi.spyOn(service, 'registerAuthorizer').mockImplementation((name, authorize) =>
           register(name, async (request, query, log) => {
@@ -214,6 +265,11 @@ describe('auto-review in the Pi host', () => {
             return authorize(request, query, log)
           }),
         )
+      })
+    }
+    const observe: ExtensionFactory = pi => {
+      pi.on('session_start', () => {
+        registrations = pi.getAllTools()
       })
       pi.on('tool_call', event => {
         if (event.parentToolCallId !== undefined) {
@@ -229,7 +285,10 @@ describe('auto-review in the Pi host', () => {
         }
       })
     }
-    const extensionFactories = [permissionSystem, observe, permissionAutoReview, createCodemodeExtension()]
+    const extensionFactories =
+      reviewPosition === 'before'
+        ? [spyRegistration, permissionAutoReview, permissionSystem, observe, createCodemodeExtension()]
+        : [spyRegistration, permissionSystem, observe, permissionAutoReview, createCodemodeExtension()]
     if (extensionFactory !== undefined) {
       extensionFactories.push(extensionFactory)
     }
@@ -292,14 +351,17 @@ describe('auto-review in the Pi host', () => {
       session.messages
         .filter(message => message.role === 'toolResult')
         .map(message => ({ toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError })),
-    ).toStrictEqual([{ toolCallId: call.id, toolName: call.name, isError: deny }])
+    ).toStrictEqual([{ toolCallId: call.id, toolName: call.name, isError: deny || reviewPosition === 'after' }])
 
     return { details, prompts, events, reviewerCalls: reviewer.state.callCount }
   }
 
   function normalise(value: unknown): unknown {
     if (typeof value === 'string') {
-      return value.replaceAll(workspace.cwd, '<cwd>').replace(/perm-[\da-f-]{36}/g, '<request-id>')
+      return value
+        .replaceAll(workspace.cwd, '<cwd>')
+        .replace(/perm-[\da-f-]{36}/g, '<request-id>')
+        .replace(/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/g, '<session-id>')
     }
     if (Array.isArray(value)) {
       return value.map(normalise)
@@ -324,14 +386,14 @@ describe('auto-review in the Pi host', () => {
       }),
     ).toStrictEqual({
       details: [{ ...request, origin: 'global', target: undefined, toolInputPreview: undefined }],
-      prompts: [expectedPrompt({ ...request, toolInput: call.arguments }, call)],
+      prompts: [expectedPrompt({ ...request, action: action(call.name, call.arguments, call.id) }, call)],
       events: [{ authorizer: call.id }],
       reviewerCalls: 1,
       executed: 'original',
     })
   })
 
-  it('recovers the full direct write input from the transcript', async () => {
+  it('captures the full direct write input', async () => {
     const content = 'first line\nsecond line\n'
     const call = fauxToolCall('write', { path: 'written.txt', content }, { id: 'direct-write' })
     const result = await runHost({ call })
@@ -345,7 +407,7 @@ describe('auto-review in the Pi host', () => {
       }),
     ).toStrictEqual({
       details: [{ ...request, origin: 'global', command: undefined, target: undefined }],
-      prompts: [expectedPrompt({ ...request, toolInput: call.arguments }, call)],
+      prompts: [expectedPrompt({ ...request, action: action(call.name, call.arguments, call.id) }, call)],
       events: [{ authorizer: call.id }],
       reviewerCalls: 1,
       written: content,
@@ -429,7 +491,7 @@ describe('auto-review in the Pi host', () => {
       }),
     ).toStrictEqual({
       details: [{ ...request, origin: 'global', command: undefined, target }],
-      prompts: [expectedPrompt({ ...request, toolInput: input }, call)],
+      prompts: [expectedPrompt({ ...request, action: action(toolName, input, call.id) }, call)],
       events: [{ authorizer: call.id }],
       reviewerCalls: 1,
       executed: [input],
@@ -456,7 +518,12 @@ describe('auto-review in the Pi host', () => {
       }),
     ).toStrictEqual({
       details: [{ ...request, origin: 'global', command: undefined, target: undefined }],
-      prompts: [expectedPrompt(request, call)],
+      prompts: [
+        expectedPrompt(
+          { ...request, action: action('write', { path: 'nested.txt', content }, 'parent/1', 'parent') },
+          call,
+        ),
+      ],
       events: [
         { authorizer: 'parent/1' },
         {
@@ -472,6 +539,22 @@ describe('auto-review in the Pi host', () => {
       reviewerCalls: 1,
       written: content,
     })
+  })
+
+  it('defers without reviewing or executing when loaded after permission-system', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const call = fauxToolCall('write', { path: 'late.txt', content: 'must not execute' }, { id: 'late-write' })
+    const result = await runHost({ call, reviewPosition: 'after' })
+    const request = writeRequest(call.id, 'late.txt', "for 'late.txt' (1 line, 16 characters)")
+
+    expect(normalise({ ...result, written: existsSync(join(workspace.cwd, 'late.txt')) })).toStrictEqual({
+      details: [{ ...request, origin: 'global', command: undefined, target: undefined }],
+      prompts: [],
+      events: [{ authorizer: call.id }],
+      reviewerCalls: 0,
+      written: false,
+    })
+    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('must load before'))
   })
 
   it('does not review or execute a deterministically denied command', async () => {
@@ -531,7 +614,9 @@ describe('auto-review in the Pi host', () => {
       }),
     ).toStrictEqual({
       details: [{ ...request, origin: 'global', target: undefined, toolInputPreview: undefined }],
-      prompts: [expectedPrompt({ ...request, toolInput: call.arguments }, call)],
+      prompts: [
+        expectedPrompt({ ...request, action: action(call.name, { ...call.arguments, timeout: 10 }, call.id) }, call),
+      ],
       events: probePosition === 'before' ? [probe, authorizer] : [authorizer, probe],
       reviewerCalls: 1,
       executed: probePosition === 'before' ? 'original' : 'rewritten',

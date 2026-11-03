@@ -1,7 +1,15 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { POLICY_REVISION } from '../../src/presets/codex/policy.js'
-import { createReviewerHarness, reply, STALLED_REPLY, toolCallEntry, USER_ENTRY } from '../helpers.js'
+import {
+  createReviewerHarness,
+  reply,
+  shellAction,
+  STALLED_REPLY,
+  toolCallEntry,
+  USER_ENTRY,
+  writeAction,
+} from '../helpers.js'
 
 const ALLOW = '{"outcome":"allow"}'
 const DENY =
@@ -37,7 +45,8 @@ describe('permission reviewer', () => {
     expect(entries[0]?.[1]).toMatchObject({
       policyRevision: POLICY_REVISION,
       contextSource: 'active-branch',
-      toolInputIncluded: false,
+      actionKind: 'shell',
+      actionDigest: shellAction().digest,
       directUserEntriesRetained: 1,
       latestTrustedEntryRetained: true,
       usage: { input: 100, cacheRead: 40, output: 10 },
@@ -54,20 +63,44 @@ describe('permission reviewer', () => {
     expect(entries[0]?.[1]).not.toHaveProperty('rationale')
   })
 
-  it('shows the reviewer the complete input of the tool call that raised the ask', async () => {
-    const content = 'x'.repeat(50_000)
-    const harness = createHarness({ entries: [USER_ENTRY, toolCallEntry({ path: 'notes.md', content })] })
-    const { entries } = await harness.authorize('request-1', { toolCallId: 'call-1' })
+  it('shows the reviewer the complete captured input of the call that raised the ask', async () => {
+    const action = writeAction('notes.md', 'x'.repeat(50_000))
+    const harness = createHarness({ resolve: () => ({ kind: 'eligible', action }) })
+    const { entries } = await harness.authorize('request-1', { toolCallId: 'call-1', toolName: 'write' })
     const [, context] = harness.streamSimple.mock.calls[0] ?? []
 
-    expect(context?.messages[0]?.content).toContain(content)
-    expect(entries[0]?.[1]).toMatchObject({ toolInputIncluded: true })
+    expect(context?.messages[0]?.content).toContain(action.input.content)
+    expect(entries[0]?.[1]).toMatchObject({ actionKind: 'file-write', actionDigest: action.digest })
+  })
+
+  it.each([
+    { resolution: 'forwarded', category: 'forwarded-ineligible' },
+    { resolution: 'action-unavailable', category: 'action-unavailable' },
+    { resolution: 'action-mismatch', category: 'action-mismatch' },
+    { resolution: 'action-changed', category: 'action-changed' },
+    { resolution: 'unsupported-input', category: 'unsupported-input' },
+    { resolution: 'protected-target', category: 'protected-target' },
+  ] as const)('defers without a model call when the capture is $resolution', async ({ resolution, category }) => {
+    const harness = createHarness({ resolve: () => ({ kind: resolution }) })
+    const { verdict, entries } = await harness.authorize()
+
+    // A review that called the model would log its usage
+    expect({ verdict, entry: entries[0]?.[1] }).toStrictEqual({
+      verdict: { kind: 'defer' },
+      entry: {
+        requestId: 'request-1',
+        provider: 'custom-review',
+        model: 'review-model',
+        outcome: 'defer',
+        errorCategory: category,
+        durationMs: 0,
+      },
+    })
   })
 
   it('defers an action too large for the reviewer to see whole, without calling it', async () => {
-    const harness = createHarness({
-      entries: [USER_ENTRY, toolCallEntry({ path: 'dump.json', content: 'x'.repeat(1_000_000) })],
-    })
+    const action = writeAction('dump.json', 'x'.repeat(1_000_000))
+    const harness = createHarness({ resolve: () => ({ kind: 'eligible', action }) })
     const { verdict, entries } = await harness.authorize('request-1', { toolCallId: 'call-1' })
 
     expect(verdict).toEqual({ kind: 'defer' })

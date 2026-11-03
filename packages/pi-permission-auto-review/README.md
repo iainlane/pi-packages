@@ -24,6 +24,16 @@ Requires Pi 1.4.0 or later and `@gotgenes/pi-permission-system` 37.x – 42.x.
 
 ## Usage
 
+Load this extension before `@gotgenes/pi-permission-system`. The reviewer judges the complete input of the call that Pi is about to run, which only a `tool_call` handler that runs before pi-permission-system can capture. Pi runs those handlers in extension load order: CLI `-e` extensions first, then the settings `extensions` paths, then `packages`, keeping the order within each list. When both packages are in the same `packages` list, put this one first:
+
+```json
+{
+  "packages": ["npm:@mzwing/pi-permission-auto-review", "npm:@gotgenes/pi-permission-system"]
+}
+```
+
+An ask without a captured input defers to the next authorizer or the human prompt, and so does an ask from a forwarded subagent, whose input the parent cannot see. A write or edit to Pi's settings or to this extension's or pi-permission-system's configuration also defers, because it would change what governs the agent and this review.
+
 Add the authorizer to pi-permission-system's config, normally `~/.pi/agent/extensions/pi-permission-system/config.json`:
 
 ```json

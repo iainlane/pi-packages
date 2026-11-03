@@ -22,10 +22,10 @@ export const CLAUDE_CODE_PRESET: Preset = {
   builtInRules: BUILT_IN_RULES,
   createLimiter: () => new DenialCounter(),
   async review(input, complete) {
-    const { config, branch, details, contextFiles } = input
+    const { config, branch, details, contextFiles, action } = input
     const systemPrompt = buildSystemPrompt(config.autoMode, contextFiles)
     const prepared = prepareReview(input, { systemPrompt, reasoning: 'off', maxTokens: FAST_MAX_TOKENS }, after => {
-      const rendered = renderTranscript(branch, details, after?.cursor)
+      const rendered = renderTranscript(branch, details, after?.cursor, action)
 
       return {
         content: after === undefined ? buildReviewMessage(rendered) : buildFollowUpMessage(rendered),

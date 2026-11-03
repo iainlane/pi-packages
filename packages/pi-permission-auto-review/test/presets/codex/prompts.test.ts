@@ -4,8 +4,7 @@ import { DEFAULT_CONFIG } from '../../../src/config/config.js'
 import { buildSystemPrompt } from '../../../src/presets/codex/policy.js'
 import { buildFollowUpPrompt, buildReviewPrompt } from '../../../src/presets/codex/review-prompt.js'
 import { renderTranscript } from '../../../src/presets/codex/transcript.js'
-import { findToolCallInput } from '../../../src/presets/session.js'
-import { permissionDetails } from '../../helpers.js'
+import { permissionDetails, shellAction } from '../../helpers.js'
 
 function messageEntry(id: string, message: Record<string, unknown>): SessionEntry {
   return { type: 'message', id, parentId: null, timestamp: '2026-07-23T00:00:00.000Z', message } as SessionEntry
@@ -43,12 +42,12 @@ it('keeps the default system prompt as reconciled against upstream', async () =>
 })
 
 it('keeps the full and follow-up review prompts', async () => {
-  const toolInput = findToolCallInput(BRANCH, DETAILS.toolCallId)
+  const action = shellAction('git push --tags', 'call-2')
 
   await expect(
-    buildReviewPrompt(DEFAULT_CONFIG, renderTranscript(BRANCH), DETAILS, toolInput).userPrompt,
+    buildReviewPrompt(DEFAULT_CONFIG, renderTranscript(BRANCH), DETAILS, action).userPrompt,
   ).toMatchFileSnapshot('./__snapshots__/review-prompt.txt')
-  await expect(buildFollowUpPrompt(renderTranscript(BRANCH, 2), DETAILS, toolInput)).toMatchFileSnapshot(
+  await expect(buildFollowUpPrompt(renderTranscript(BRANCH, 2), DETAILS, action)).toMatchFileSnapshot(
     './__snapshots__/follow-up-prompt.txt',
   )
 })

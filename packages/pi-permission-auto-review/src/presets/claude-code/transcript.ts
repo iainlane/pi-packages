@@ -1,3 +1,4 @@
+import type { ReviewAction } from '../../action/schema.js'
 import type { TranscriptCursor } from '../../reviewer/conversation.js'
 import type { SessionEvent } from '../session.js'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
@@ -73,12 +74,14 @@ function precedes(event: SessionEvent, target: ToolCall): boolean {
 
 /**
  * The branch up to the call that raised the ask, which is always the last line; with `after`, only what follows
- * that cursor. A user line always brings the agent prose it answers, even from before the cursor
+ * that cursor. A user line always brings the agent prose it answers, even from before the cursor. The last line
+ * shows the captured `action` input when there is one, since a nested call never appears in the transcript
  */
 export function renderTranscript(
   entries: SessionEntry[],
   details: PromptPermissionDetails,
   after?: TranscriptCursor,
+  action?: ReviewAction,
 ): ClaudeCodeTranscript {
   const events = decodeSession(entries)
   const target =
@@ -201,15 +204,21 @@ export function renderTranscript(
   if (omitted > 0) {
     rendered.push(JSON.stringify({ omitted }))
   }
-  const action =
-    target === undefined
-      ? JSON.stringify({ permission_request: permissionRequest(details) })
-      : JSON.stringify({ [toolKey(target.name)]: target.input, id: transcriptId(target) })
+  const captured = action === undefined || action.kind === 'skill' ? undefined : action
+  const actionLine =
+    captured !== undefined
+      ? JSON.stringify({
+          [toolKey(captured.toolName)]: captured.input,
+          ...(target === undefined ? {} : { id: transcriptId(target) }),
+        })
+      : target === undefined
+        ? JSON.stringify({ permission_request: permissionRequest(details) })
+        : JSON.stringify({ [toolKey(target.name)]: target.input, id: transcriptId(target) })
   const retained = [...selected].flatMap(unit => unit.lines)
   const lastEntry = target === undefined ? entries.at(-1) : entries[target.index]
 
   return {
-    lines: [...rendered, action],
+    lines: [...rendered, actionLine],
     cursor: lastEntry === undefined ? undefined : { entryId: lastEntry.id, toolCallId: target?.id },
     stats: {
       transcriptLinesRetained: retained.length,

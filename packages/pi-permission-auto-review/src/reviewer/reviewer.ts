@@ -1,3 +1,5 @@
+import type { ActionCapture } from '../action/capture.js'
+import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig } from '../config/config.js'
 import type { ContextFile, Preset, ReviewFields, ReviewOutcome } from '../presets/presets.js'
 import type { ReviewConversation } from './conversation.js'
@@ -14,6 +16,7 @@ type FailureCategory = 'provider-unresolved' | 'model-unresolved' | CallFailure
 
 export interface ReviewerRuntime {
   config: AutoReviewConfig
+  actions: Pick<ActionCapture, 'resolve'>
   /** Read at every review, since `signal` belongs to the turn in progress */
   context: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal'>
   /** The context files the user's trust covers, as of the latest run */
@@ -36,6 +39,7 @@ async function runReview(
   runtime: ReviewerRuntime,
   preset: Preset,
   details: PromptPermissionDetails,
+  action: ReviewAction,
   conversation: ReviewConversation | undefined,
 ): Promise<ReviewResult> {
   const { config, context } = runtime
@@ -74,6 +78,7 @@ async function runReview(
         config,
         branch: context.sessionManager.getBranch(),
         details,
+        action,
         contextFiles: runtime.contextFiles(),
         conversation,
         contextWindow: model.contextWindow,
@@ -105,6 +110,18 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
     }
 
     try {
+      const resolved = runtime.actions.resolve(details, runtime.context.sessionManager.getSessionId())
+      if (resolved.kind !== 'eligible') {
+        log.review(DECISION_EVENT, {
+          ...entryBase,
+          outcome: 'defer',
+          errorCategory: resolved.kind === 'forwarded' ? 'forwarded-ineligible' : resolved.kind,
+          durationMs: elapsed(),
+        })
+
+        return { kind: 'defer' }
+      }
+      const { action } = resolved
       const refusal = limiter.refusal()
       if (refusal !== undefined) {
         log.review('auto_review.circuit_open', {
@@ -117,11 +134,13 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         return { kind: 'deny', reason: refusal }
       }
 
-      const result = await runReview(runtime, preset, details, conversation)
+      const result = await runReview(runtime, preset, details, action, conversation)
       const durationMs = elapsed()
       const diagnostics = {
         policyRevision: preset.policyRevision,
         contextSource: 'active-branch',
+        actionKind: action.kind,
+        actionDigest: action.digest,
         ...result.fields,
         ...(result.usage === undefined ? {} : { usage: result.usage }),
       }

@@ -35,6 +35,22 @@ process and records these facts.
 | Model-visible context                | `buildSessionProjection()` applies compaction and `context_edit` entries; `getBranch()` returns the raw history.                                                                                                                                                                                                                                                         |
 | Deterministic denials                | A static deny rule refuses the call before any authorizer runs.                                                                                                                                                                                                                                                                                                          |
 
+## What the extension does with it
+
+- A `tool_call` handler captures the validated input of every call, nested
+  `codemode` calls included, keyed by tool call id, with a digest, the cwd,
+  the session and the tool's registration. The reviewer judges a typed action
+  built from the capture.
+- An ask without a capture, with a capture for another tool or session, or
+  with an input that another extension changed after the capture, defers to
+  the next authorizer or the human prompt.
+- Forwarded subagent asks defer, because the parent receives neither the
+  child's input nor its transcript.
+- A write or edit whose path resolves, through any symlinks, into Pi's
+  settings or into this extension's or pi-permission-system's configuration
+  defers. The policy treats such a change made through a shell command as
+  permission tampering.
+
 ## Load order
 
 Pi runs `tool_call` handlers one at a time, in extension load order. The host
@@ -46,3 +62,14 @@ test shows two consequences:
 - A handler that loads after pi-permission-system runs after the verdict. If it
   rewrites `event.input.command`, the rewritten command runs, even though the
   reviewer approved the original one.
+
+The capture therefore requires this extension to load before
+pi-permission-system. The second consequence remains a gap: Codex checks that
+an approval still matches the action at the point of execution, and in Pi only
+a handler that runs after every other `tool_call` handler could make that
+check. Closing the gap needs a change in Pi.
+
+## Departures from Codex
+
+- Forwarded subagent asks go to the human, because the parent cannot see the
+  child's action.

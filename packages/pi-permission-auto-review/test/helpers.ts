@@ -1,3 +1,5 @@
+import type { ActionResolution } from '../src/action/capture.js'
+import type { ReviewAction } from '../src/action/schema.js'
 import type { AutoReviewConfig } from '../src/config/config.js'
 import type { AssistantMessage, Context, SimpleStreamOptions, ThinkingLevelMap, Usage } from '@earendil-works/pi-ai'
 import type { ModelRegistry, SessionEntry } from '@earendil-works/pi-coding-agent'
@@ -12,6 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, vi } from 'vitest'
+import { inputDigest } from '../src/action/json.js'
 import { mergeConfig } from '../src/config/config.js'
 import { createPermissionReviewer } from '../src/reviewer/reviewer.js'
 
@@ -64,6 +67,56 @@ export function permissionDetails(overrides: Partial<PromptPermissionDetails> = 
     surface: 'bash',
     ...overrides,
   }
+}
+
+/** A captured bash call, as `ActionCapture.resolve` returns it for an ask about `command` */
+export function shellAction(command = 'pnpm publish', toolCallId = 'call-1'): Extract<ReviewAction, { kind: 'shell' }> {
+  const input = { command }
+
+  return {
+    kind: 'shell',
+    toolName: 'bash',
+    toolCallId,
+    cwd: '/workspace',
+    sessionId: 'session-1',
+    input,
+    digest: inputDigest(input),
+  }
+}
+
+/** A captured write call, as `ActionCapture.resolve` returns it */
+export function writeAction(
+  path: string,
+  content: string,
+  toolCallId = 'call-1',
+): Extract<ReviewAction, { kind: 'file-write' }> {
+  const input = { path, content }
+
+  return {
+    kind: 'file-write',
+    toolName: 'write',
+    toolCallId,
+    cwd: '/workspace',
+    sessionId: 'session-1',
+    input,
+    digest: inputDigest(input),
+    resolvedPath: `/workspace/${path}`,
+  }
+}
+
+/** The capture that Pi would have produced for the branch's call with the ask's id, or a bash call it names */
+function capturedAction(branch: SessionEntry[], details: PromptPermissionDetails): ReviewAction {
+  for (const entry of branch.toReversed()) {
+    const content = entry.type === 'message' && entry.message.role === 'assistant' ? entry.message.content : []
+    for (const block of Array.isArray(content) ? content : []) {
+      if (block.type !== 'toolCall' || block.id !== details.toolCallId) continue
+      const input = block.arguments as Record<string, string>
+      if (block.name === 'write') return writeAction(input['path'] ?? '', input['content'] ?? '', block.id)
+      if (block.name === 'bash') return shellAction(input['command'], block.id)
+    }
+  }
+
+  return shellAction(details.command, details.toolCallId)
 }
 
 export const STALLED_REPLY: Promise<AssistantMessage> = new Promise(() => {})
@@ -137,6 +190,8 @@ interface ReviewerHarnessOptions {
   turnSignal?: AbortSignal
   contextWindow?: number
   thinkingLevelMap?: ThinkingLevelMap
+  /** What the action capture answers for each ask; by default the bash command that the ask names */
+  resolve?: (details: PromptPermissionDetails) => ActionResolution
 }
 
 export function createReviewerHarness(options: ReviewerHarnessOptions): ReviewerHarness {
@@ -169,6 +224,9 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
   } as unknown as ModelRegistry
   const reviewer = createPermissionReviewer({
     config: mergeConfig({}, { provider: 'custom-review', model: 'review-model', ...options.config }),
+    actions: {
+      resolve: options.resolve ?? (details => ({ kind: 'eligible', action: capturedAction(branch, details) })),
+    },
     context: {
       modelRegistry: registry,
       sessionManager: { getBranch: () => [...branch], getSessionId: () => 'session-1' },
