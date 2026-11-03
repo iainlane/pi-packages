@@ -1,29 +1,36 @@
 import type { ActionCapture } from '../action/capture.js'
-import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig } from '../config/config.js'
 import type { ContextFile, Preset, ReviewFailure, ReviewFields, ReviewOutcome } from '../presets/presets.js'
 import type { UserMessageProvenance } from '../provenance/provenance.js'
 import type { ReviewConversation } from './conversation.js'
-import type { CallUsage } from './model-call.js'
+import type { CallUsage, ModelCall } from './model-call.js'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type { Authorizer, AuthorizerVerdict, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { PRESETS } from '../presets/presets.js'
 import { createModelCall } from './model-call.js'
 import { resolveReviewModel } from './model.js'
+import { captureSnapshot, validateSnapshot } from './snapshot.js'
 
 const DECISION_EVENT = 'auto_review.decision'
+// Each attempt after the first reviews user evidence that arrived during the one before
+const MAX_ATTEMPTS = 3
 
-type FailureCategory = 'provider-unresolved' | 'model-unresolved' | ReviewFailure
+type FailureCategory =
+  | 'provider-unresolved'
+  | 'model-unresolved'
+  | 'stale-snapshot'
+  | 'stale-authorization-exhausted'
+  | ReviewFailure
 
 export interface ReviewerRuntime {
   config: AutoReviewConfig
-  actions: Pick<ActionCapture, 'resolve'>
+  actions: Pick<ActionCapture, 'resolve' | 'registryDigest'>
   provenance: Pick<UserMessageProvenance, 'flush'>
   /** Read at every review, since `signal` belongs to the turn in progress */
   context: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal'>
   /** The context files the user's trust covers, as of the latest run */
   contextFiles: () => readonly ContextFile[]
-  /** Aborted when the reviewer is replaced or the session ends */
+  /** Aborted when the reviewer is replaced, the session ends or the session moves to other history; read at every review */
   sessionSignal: AbortSignal
 }
 
@@ -33,15 +40,72 @@ export interface PermissionReviewer {
   resetTurn: () => void
 }
 
+type AttemptResult =
+  | Exclude<ReviewOutcome, { kind: 'failed' }>
+  | { kind: 'failed'; failure: FailureCategory; fields: ReviewFields }
+
 type ReviewResult =
   | (Exclude<ReviewOutcome, { kind: 'failed' }> & { usage: CallUsage })
   | { kind: 'failed'; failure: FailureCategory; fields?: ReviewFields; usage?: CallUsage }
+
+/**
+ * Reviews until a verdict still applies to the session as it is when the verdict arrives. New user evidence, which
+ * can authorize or restrict the action, starts another attempt within the same deadline
+ */
+async function reviewCurrentEvidence(
+  runtime: ReviewerRuntime,
+  preset: Preset,
+  details: PromptPermissionDetails,
+  conversation: ReviewConversation | undefined,
+  options: { complete: ModelCall; contextWindow: number },
+): Promise<AttemptResult> {
+  const { config, context } = runtime
+  let continued = conversation
+  for (let attempt = 1; ; attempt += 1) {
+    // The last user message may still be waiting for its provenance record
+    runtime.provenance.flush(context)
+    const snapshot = captureSnapshot(runtime, details)
+    if (snapshot.action === undefined) {
+      return { kind: 'failed', failure: 'stale-snapshot', fields: { attempts: attempt } }
+    }
+    const outcome = await preset.review(
+      {
+        config,
+        branch: snapshot.branch,
+        projection: snapshot.projection,
+        details,
+        action: snapshot.action,
+        contextFiles: runtime.contextFiles(),
+        conversation: continued,
+        contextWindow: options.contextWindow,
+      },
+      options.complete,
+    )
+    const fields = { ...outcome.fields, attempts: attempt }
+    if (outcome.kind === 'failed') {
+      return { ...outcome, fields }
+    }
+
+    runtime.provenance.flush(context)
+    const validation = validateSnapshot(snapshot, captureSnapshot(runtime, details))
+    if (validation === 'current') {
+      return { ...outcome, fields }
+    }
+    if (validation === 'stale-snapshot') {
+      return { kind: 'failed', failure: 'stale-snapshot', fields }
+    }
+    if (attempt === MAX_ATTEMPTS) {
+      return { kind: 'failed', failure: 'stale-authorization-exhausted', fields }
+    }
+    // The conversation so far judged evidence that no longer stands
+    continued = undefined
+  }
+}
 
 async function runReview(
   runtime: ReviewerRuntime,
   preset: Preset,
   details: PromptPermissionDetails,
-  action: ReviewAction,
   conversation: ReviewConversation | undefined,
 ): Promise<ReviewResult> {
   const { config, context } = runtime
@@ -75,21 +139,10 @@ async function runReview(
       deadline,
       usage,
     })
-    // The last user message may still be waiting for its provenance record
-    runtime.provenance.flush(context)
-    const outcome = await preset.review(
-      {
-        config,
-        branch: context.sessionManager.getBranch(),
-        projection: context.sessionManager.buildSessionProjection(),
-        details,
-        action,
-        contextFiles: runtime.contextFiles(),
-        conversation,
-        contextWindow: model.contextWindow,
-      },
+    const outcome = await reviewCurrentEvidence(runtime, preset, details, conversation, {
       complete,
-    )
+      contextWindow: model.contextWindow,
+    })
 
     return { ...outcome, usage }
   } finally {
@@ -139,7 +192,7 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         return { kind: 'deny', reason: refusal }
       }
 
-      const result = await runReview(runtime, preset, details, action, conversation)
+      const result = await runReview(runtime, preset, details, conversation)
       const durationMs = elapsed()
       const diagnostics = {
         policyRevision: preset.policyRevision,

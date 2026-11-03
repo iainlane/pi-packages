@@ -36,6 +36,8 @@ interface Generation {
   runtime: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal' | 'ui'>
   config: AutoReviewConfig | undefined
   controller: AbortController
+  /** Its controller is replaced each time the session moves to other history, which ends the reviews in progress */
+  history: { controller: AbortController }
   resetTurn: () => void
   authorize: Authorizer['authorize']
   dispose: (() => void) | undefined
@@ -88,6 +90,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
 
   function createGeneration(runtime: Generation['runtime'], config: AutoReviewConfig | undefined): Generation {
     const controller = new AbortController()
+    const history = { controller: new AbortController() }
     const reviewer: PermissionReviewer =
       config === undefined
         ? { authorize: deferInvalidConfig, resetTurn: () => {} }
@@ -97,12 +100,15 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
             provenance,
             context: runtime,
             contextFiles: () => contextFiles,
-            sessionSignal: controller.signal,
+            get sessionSignal() {
+              return AbortSignal.any([controller.signal, history.controller.signal])
+            },
           })
     const created: Generation = {
       runtime,
       config,
       controller,
+      history,
       resetTurn: reviewer.resetTurn,
       authorize: async (details, query, log) => {
         const verdict = await reviewer.authorize(details, query, log)
@@ -223,6 +229,18 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   pi.on('turn_start', () => {
     generation?.resetTurn()
   })
+
+  const cancelReviews = (): void => {
+    if (generation === undefined) {
+      return
+    }
+    generation.history.controller.abort()
+    generation.history.controller = new AbortController()
+  }
+  pi.on('session_tree', cancelReviews)
+  pi.on('session_compact', cancelReviews)
+  pi.on('session_before_switch', cancelReviews)
+  pi.on('session_before_fork', cancelReviews)
 
   pi.on('session_shutdown', (_event, ctx) => {
     ctx.ui.setStatus(EXTENSION_ID, undefined)

@@ -98,6 +98,7 @@ describe('permission auto-review extension', () => {
         getBranch: () => [],
         buildSessionProjection: () => buildSessionProjection([]),
         getSessionId: () => SESSION_ID,
+        getLeafId: () => null,
       },
       ui: { setStatus },
       isProjectTrusted: () => projectTrusted,
@@ -264,6 +265,35 @@ describe('permission auto-review extension', () => {
     harness.shutdown()
     expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, undefined)
   })
+
+  it.each(['session_tree', 'session_compact', 'session_before_switch', 'session_before_fork'])(
+    'cancels a review in progress on %s, then reviews the next ask',
+    async event => {
+      const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+      publish(registerAuthorizer)
+      const { registry, streamSimple } = reviewRegistry(DENY)
+      const { promise: requested, resolve: markRequested } = Promise.withResolvers<void>()
+      streamSimple.mockImplementationOnce(() => {
+        markRequested()
+        return { result: async () => new Promise(() => {}) }
+      })
+      const harness = start(registry)
+      harness.start()
+      harness.ready()
+      const authorize = registerAuthorizer.mock.calls[0]?.[1]
+
+      const stalled = review(authorize)
+      await requested
+      harness.emit(event, {}, {})
+      const cancelled = await stalled
+      const next = await review(authorize)
+
+      expect({
+        cancelled: [cancelled.verdict?.kind, cancelled.entry?.[1]?.['errorCategory']],
+        next: next.verdict?.kind,
+      }).toStrictEqual({ cancelled: ['deny', 'cancelled'], next: 'deny' })
+    },
+  )
 
   it('hot-swaps the reviewer generation after a config reset, closing the circuit', async () => {
     const global = configPath(workspace.cwd, 'global')

@@ -185,9 +185,14 @@ type ReviewStart = (
   details?: Partial<PromptPermissionDetails>,
 ) => { verdict: Promise<AuthorizerVerdict>; entries: Parameters<AuthorizerLog['review']>[] }
 
+/** A reply, or a function that the model call runs to produce it, such as one that changes the session first */
+type ScriptedReply = AssistantMessage | Promise<AssistantMessage> | (() => AssistantMessage | Promise<AssistantMessage>)
+
 interface ReviewerHarness {
   /** The session's active branch, which a test may grow or replace between reviews */
   branch: SessionEntry[]
+  /** The digest that the action capture reports for the registered tools */
+  registryDigest: string
   resetTurn: () => void
   streamSimple: Mock<StreamSimple>
   callTimes: number[]
@@ -201,7 +206,7 @@ interface ReviewerHarness {
 
 interface ReviewerHarnessOptions {
   /** Every reply the model gives, in order */
-  replies: (AssistantMessage | Promise<AssistantMessage>)[]
+  replies: ScriptedReply[]
   config?: Partial<AutoReviewConfig>
   getProvider?: () => unknown
   entries?: SessionEntry[]
@@ -224,7 +229,7 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
         throw new Error('no scripted reply')
       }
 
-      return next
+      return typeof next === 'function' ? next() : next
     },
   }))
   const model = {
@@ -240,10 +245,12 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
     getProvider: options.getProvider ?? (() => ({ id: 'custom-review' })),
     streamSimple,
   } as unknown as ModelRegistry
+  const state = { registryDigest: 'registry-1' }
   const reviewer = createPermissionReviewer({
     config: mergeConfig({}, { provider: 'custom-review', model: 'review-model', ...options.config }),
     actions: {
       resolve: options.resolve ?? (details => ({ kind: 'eligible', action: capturedAction(branch, details) })),
+      registryDigest: () => state.registryDigest,
     },
     context: {
       modelRegistry: registry,
@@ -253,6 +260,7 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
         buildSessionProjection: () =>
           buildSessionProjection(branch.map((entry, index) => ({ ...entry, parentId: branch[index - 1]?.id ?? null }))),
         getSessionId: () => 'session-1',
+        getLeafId: () => branch.at(-1)?.id ?? null,
       },
       signal: options.turnSignal,
     } as never,
@@ -273,6 +281,12 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
 
   return {
     branch,
+    get registryDigest() {
+      return state.registryDigest
+    },
+    set registryDigest(digest: string) {
+      state.registryDigest = digest
+    },
     resetTurn: reviewer.resetTurn,
     streamSimple,
     callTimes,

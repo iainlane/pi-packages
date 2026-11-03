@@ -393,6 +393,133 @@ describe('permission reviewer', () => {
     })
   })
 
+  describe('freshness', () => {
+    function userMessage(id: string, content: string): SessionEntry[] {
+      return [
+        { ...USER_ENTRY, id, message: { role: 'user', content, timestamp: 0 } } as SessionEntry,
+        provenanceEntry(id),
+      ]
+    }
+
+    const prompts = (harness: ReturnType<typeof createHarness>): string[] =>
+      harness.streamSimple.mock.calls.map(([, context]) => String(context.messages.at(-1)?.content))
+
+    it('reviews again with the new evidence when the person adds a message during the review', async () => {
+      const harness = createHarness({
+        replies: [
+          () => {
+            harness.branch.push(...userMessage('user-2', 'Do not publish anything.'))
+
+            return reply(ALLOW)
+          },
+          reply(DENY),
+        ],
+      })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({
+        verdict: verdict.kind,
+        sawRestriction: prompts(harness).map(prompt => prompt.includes('Do not publish anything.')),
+        log: entries.map(([, entry]) => ({ outcome: entry?.['outcome'], attempts: entry?.['attempts'] })),
+      }).toStrictEqual({ verdict: 'deny', sawRestriction: [false, true], log: [{ outcome: 'deny', attempts: 2 }] })
+    })
+
+    it('defers when the user evidence changes during each of three attempts', async () => {
+      const harness = createHarness({
+        replies: [0, 1, 2].map(index => () => {
+          harness.branch.push(...userMessage(`user-${index + 2}`, `Message ${index}`))
+
+          return reply(ALLOW)
+        }),
+      })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({ verdict, entry: entries[0]?.[1] }).toMatchObject({
+        verdict: { kind: 'defer' },
+        entry: { outcome: 'defer', errorCategory: 'stale-authorization-exhausted', attempts: 3 },
+      })
+    })
+
+    it.each([
+      {
+        change: 'the branch moves to another path',
+        apply: (harness: ReturnType<typeof createHarness>) =>
+          harness.branch.splice(0, Infinity, ...userMessage('user-other', 'Please run the requested operation.')),
+      },
+      {
+        change: 'a context edit lands',
+        apply: (harness: ReturnType<typeof createHarness>) =>
+          harness.branch.push({
+            type: 'context_edit',
+            id: 'edit-1',
+            parentId: 'provenance-user-1',
+            timestamp: USER_ENTRY.timestamp,
+            targetId: 'missing',
+            replacement: null,
+          }),
+      },
+      {
+        change: 'the registered tools change',
+        apply: (harness: ReturnType<typeof createHarness>) => {
+          harness.registryDigest = 'registry-2'
+        },
+      },
+    ])('defers without another attempt when $change during the review', async ({ apply }) => {
+      const harness = createHarness({
+        replies: [
+          () => {
+            apply(harness)
+
+            return reply(ALLOW)
+          },
+        ],
+      })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({ verdict, entry: entries[0]?.[1] }).toMatchObject({
+        verdict: { kind: 'defer' },
+        entry: { outcome: 'defer', errorCategory: 'stale-snapshot', attempts: 1 },
+      })
+    })
+
+    it('applies the verdict when the session only gained an assistant message during the review', async () => {
+      const harness = createHarness({
+        replies: [
+          () => {
+            harness.branch.push(toolCallEntry({ path: 'notes.md', content: 'unrelated' }, 'call-2'))
+
+            return reply(ALLOW)
+          },
+        ],
+      })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({ verdict, entry: entries[0]?.[1] }).toMatchObject({
+        verdict: { kind: 'allow' },
+        entry: { outcome: 'allow', attempts: 1 },
+      })
+    })
+
+    it('starts the second attempt over in full instead of continuing the conversation', async () => {
+      const harness = createHarness({
+        config: { followUpReviews: 'always' },
+        replies: [
+          reply(ALLOW),
+          () => {
+            harness.branch.push(...userMessage('user-2', 'Only the staging registry.'))
+
+            return reply(ALLOW)
+          },
+          reply(ALLOW),
+        ],
+      })
+      await harness.authorize('request-1')
+      await harness.authorize('request-2')
+
+      expect(harness.streamSimple.mock.calls.map(([, context]) => context.messages.length)).toStrictEqual([1, 3, 1])
+    })
+  })
+
   describe('follow-up reviews', () => {
     const uncached = (): AssistantMessage => reply(ALLOW, 'stop', { cacheRead: 0 })
     const messageCounts = (harness: ReturnType<typeof createHarness>): number[] =>

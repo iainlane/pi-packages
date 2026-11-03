@@ -59,6 +59,8 @@ process and records these facts.
   branch.
 - See [context edits and compaction](#context-edits-and-compaction) for how
   the `codex` preset builds its evidence.
+- A verdict applies only if the session still matches what the review read.
+  See [freshness](#freshness).
 
 ## Context edits and compaction
 
@@ -93,6 +95,30 @@ reaches the reviewer as an untrusted `edited_user` record.
 A follow-up review continues the earlier reviews' conversation with only what
 the session added. It starts over in full after a context edit or compaction,
 because either can change what the earlier reviews saw.
+
+## Freshness
+
+Pi reports no revisions of the state that a review depends on, so the reviewer
+records that state before each attempt and checks it again when the verdict
+arrives. It records the captured action's digest, the registered tools, the
+context edits on the branch, the session and the branch leaf, plus a digest of
+the user evidence: user messages, their provenance records, and the calls and
+results of the recognised interaction tools.
+
+When only the user evidence changed, for example because the person added a
+restriction, the reviewer discards the verdict and reviews the new evidence,
+as Codex does when its recorded authorization revision changes. The new attempt
+starts a full review, and the review defers after three attempts that each saw
+the evidence change. A change to anything else defers the ask. An appended
+entry keeps the earlier leaf on the branch, so only moving to another branch
+counts as a branch change. Moving through the session tree, compaction,
+switching sessions and forking also cancel the reviews in progress.
+
+Like Codex, the reviewer counts only recorded user evidence. Pi runs input
+handlers before it records a message, and a handler can consume a submission
+without recording anything. A queued or intercepted restriction can therefore
+arrive too late to stop the action under review; Pi's cancellation control
+interrupts the run.
 
 ## Interaction answers
 
