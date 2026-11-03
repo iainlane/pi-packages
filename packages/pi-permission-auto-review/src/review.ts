@@ -4,7 +4,13 @@ export { DEFAULT_CONFIG } from './config/config.js'
 export { buildSystemPrompt, FIXED_REVIEW_PROTOCOL, POLICY_REVISION } from './presets/codex/policy.js'
 export type { ReviewPrompt } from './presets/codex/review-prompt.js'
 export { buildReviewPrompt } from './presets/codex/review-prompt.js'
-export type { RenderedTranscript } from './presets/codex/transcript.js'
+export type {
+  EvidenceManifest,
+  RenderedTranscript,
+  RenderOptions,
+  SourceManifest,
+  TranscriptSource,
+} from './presets/codex/transcript.js'
 export { renderTranscript } from './presets/codex/transcript.js'
 export { findToolCallInput } from './presets/session.js'
 export type { ReviewAssessment } from './presets/codex/verdict.js'

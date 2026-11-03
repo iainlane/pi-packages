@@ -36,6 +36,9 @@ An ask without a captured input defers to the next authorizer or the human promp
 
 With the `codex` preset, only messages that the person sent from the interactive UI or over RPC count as their instructions. Messages that other extensions send, and messages in sessions recorded before this version, are shown to the reviewer as untrusted. When a skill or prompt template expanded what the person typed, their typed text counts and the expansion does not. See [provenance trust][provenance-trust] for the limits of this check.
 
+The `codex` preset shows the reviewer every user message in full, including ones that compaction removed from the agent's context. When a long session would not fit the reviewer model, other records are left out first, and then user messages longer than 900 tokens are shortened, oldest first. A review defers when a context edit removed or replaced a user message. See [context edits and compaction][context-edits].
+
+[context-edits]: docs/codex-parity.md#context-edits-and-compaction
 [provenance-trust]: docs/codex-parity.md#provenance-trust
 
 Add the authorizer to pi-permission-system's config, normally `~/.pi/agent/extensions/pi-permission-system/config.json`:

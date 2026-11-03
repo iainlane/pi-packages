@@ -1,4 +1,5 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai'
+import type { SessionEntry } from '@earendil-works/pi-coding-agent'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { POLICY_REVISION } from '../../src/presets/codex/policy.js'
 import {
@@ -48,8 +49,10 @@ describe('permission reviewer', () => {
       contextSource: 'active-branch',
       actionKind: 'shell',
       actionDigest: shellAction().digest,
-      directUserEntriesRetained: 1,
-      latestTrustedEntryRetained: true,
+      'user.retainedFull': 1,
+      authorityFits: true,
+      authorityEdited: false,
+      provenanceUncertain: false,
       usage: { input: 100, cacheRead: 40, output: 10 },
     })
   })
@@ -115,10 +118,87 @@ describe('permission reviewer', () => {
     })
     const { verdict, entries } = await harness.authorize()
 
-    expect({ verdict, entry: entries[0]?.[1], calls: harness.streamSimple.mock.calls.length }).toMatchObject({
+    expect({ verdict, entry: entries[0]?.[1] }).toMatchObject({
       verdict: { kind: 'defer' },
-      entry: { outcome: 'defer', errorCategory: 'provenance-uncertain', provenanceUncertain: true },
-      calls: 0,
+      entry: {
+        outcome: 'defer',
+        errorCategory: 'provenance-uncertain',
+        provenanceUncertain: true,
+        usage: { input: 0, output: 0 },
+      },
+    })
+  })
+
+  describe('user evidence', () => {
+    function userMessages(lengths: number[]): SessionEntry[] {
+      return lengths.flatMap((length, index) => [
+        {
+          ...USER_ENTRY,
+          id: `user-${index}`,
+          message: { role: 'user', content: `${index}:${'x'.repeat(length)}`, timestamp: 0 },
+        },
+        provenanceEntry(`user-${index}`),
+      ]) as SessionEntry[]
+    }
+    const prompt = (harness: ReturnType<typeof createHarness>): string =>
+      String(harness.streamSimple.mock.calls[0]?.[1].messages[0]?.content ?? '')
+
+    it('reviews a session whose user messages exceed the 20,000-token allowance', async () => {
+      const harness = createHarness({ entries: userMessages([60_000, 60_000]) })
+      const { verdict } = await harness.authorize()
+
+      expect({ verdict, truncated: prompt(harness).includes('[truncated]') }).toStrictEqual({
+        verdict: { kind: 'allow' },
+        truncated: false,
+      })
+    })
+
+    it.each([
+      { description: 'the oldest long user messages', lengths: [80_000, 80_000, 20_000], newestWhole: true },
+      { description: 'a newest user message that alone does not fit', lengths: [1_000, 200_000], newestWhole: false },
+    ])('shortens $description to fit a small context window', async ({ lengths, newestWhole }) => {
+      const newest = `${lengths.length - 1}:${'x'.repeat(lengths.at(-1) ?? 0)}`
+      const harness = createHarness({ contextWindow: 60_000, entries: userMessages(lengths) })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({
+        verdict,
+        newestWhole: prompt(harness).includes(JSON.stringify(newest).slice(1, -1)),
+        truncated: prompt(harness).includes('[truncated]'),
+        entry: entries[0]?.[1],
+      }).toMatchObject({ verdict: { kind: 'allow' }, newestWhole, truncated: true, entry: { authorityFits: true } })
+    })
+
+    it('defers without a model call when user messages too short to shorten do not fit', async () => {
+      const harness = createHarness({
+        contextWindow: 40_000,
+        entries: userMessages(Array.from<number>({ length: 60 }).fill(3_000)),
+      })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({ verdict, entry: entries[0]?.[1] }).toMatchObject({
+        verdict: { kind: 'defer' },
+        // No tokens used, because no model call was made
+        entry: { errorCategory: 'authority-over-budget', authorityFits: false, usage: { input: 0, output: 0 } },
+      })
+    })
+
+    it('defers without a model call when a context edit removed user evidence', async () => {
+      const edit = {
+        type: 'context_edit',
+        id: 'edit',
+        parentId: 'provenance-user-1',
+        timestamp: USER_ENTRY.timestamp,
+        targetId: USER_ENTRY.id,
+        replacement: null,
+      } as SessionEntry
+      const harness = createHarness({ entries: [USER_ENTRY, provenanceEntry(USER_ENTRY.id), edit] })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({ verdict, entry: entries[0]?.[1] }).toMatchObject({
+        verdict: { kind: 'defer' },
+        entry: { errorCategory: 'authority-edited', authorityEdited: true, usage: { input: 0, output: 0 } },
+      })
     })
   })
 
@@ -340,6 +420,26 @@ describe('permission reviewer', () => {
       expect(followUp?.messages[2]?.content).not.toContain('Please run the requested operation.')
       expect(entries[0]?.[1]).toMatchObject({ priorReviews: 1 })
     })
+
+    it.each(['context_edit', 'compaction'] as const)(
+      'starts over in full after a %s, which can change what the earlier reviews saw',
+      async type => {
+        const harness = createHarness({ replies: [reply(ALLOW), reply(ALLOW)] })
+        await harness.authorize('request-1')
+        harness.branch.push({
+          type,
+          id: 'change',
+          parentId: 'provenance-user-1',
+          timestamp: USER_ENTRY.timestamp,
+          ...(type === 'context_edit'
+            ? { targetId: 'missing', replacement: null }
+            : { summary: 'Summary', firstKeptEntryId: USER_ENTRY.id, tokensBefore: 10 }),
+        } as SessionEntry)
+        await harness.authorize('request-2')
+
+        expect(harness.streamSimple.mock.calls.map(([, context]) => context.messages.length)).toStrictEqual([1, 1])
+      },
+    )
 
     it('starts over in full once the reviewed entries leave the branch, or the conversation would not fit', async () => {
       const moved = createHarness({ replies: [reply(ALLOW), reply(ALLOW)] })

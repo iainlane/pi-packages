@@ -51,6 +51,7 @@ interface HostOptions {
   permission?: Record<string, PermissionState | Record<string, PermissionState>>
   probePosition?: 'before' | 'after'
   reviewPosition?: 'before' | 'after'
+  prompt?: string
 }
 
 interface ReviewEvidence {
@@ -202,6 +203,7 @@ describe('auto-review in the Pi host', () => {
     permission,
     probePosition,
     reviewPosition = 'before',
+    prompt = 'Perform the scripted action.',
   }: HostOptions) {
     mkdirSync(workspace.cwd, { recursive: true })
     workspace.cwd = realpathSync(workspace.cwd)
@@ -341,7 +343,7 @@ describe('auto-review in the Pi host', () => {
     })
     sessions.push(session)
     await session.bindExtensions({ mode: 'rpc', onError: error => errors.push(error) })
-    await session.prompt('Perform the scripted action.')
+    await session.prompt(prompt)
     expect({ errors, loadErrors: extensionsResult.errors, mainCalls: main.state.callCount }).toStrictEqual({
       errors: [],
       loadErrors: [],
@@ -555,6 +557,50 @@ describe('auto-review in the Pi host', () => {
       written: false,
     })
     expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('must load before'))
+  })
+
+  it('defers edited user evidence without review or execution through the real host projection', async () => {
+    const editUser: ExtensionFactory = pi => {
+      pi.on('context', (_event, ctx) => {
+        const user = ctx.sessionManager
+          .getBranch()
+          .find(entry => entry.type === 'message' && entry.message.role === 'user')
+        const session = sessions.at(-1)
+        if (user === undefined || session === undefined) {
+          throw new Error('The host did not append the user message')
+        }
+        session.sessionManager.appendContextEdit(user.id, { content: 'Edited request evidence' })
+      })
+    }
+    const call = fauxToolCall('bash', { command: 'printf original > executed.txt' }, { id: 'edited' })
+    const result = await runHost({
+      call,
+      deny: true,
+      permission: { bash: 'ask' },
+      extensionFactory: editUser,
+      prompt: 'Original user restriction',
+    })
+    const logPath = join(
+      getAgentDir(),
+      'extensions/pi-permission-system/logs/pi-permission-system-permission-review.jsonl',
+    )
+    const decisions = readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line) as { event: string; outcome?: string; errorCategory?: string })
+      .filter(entry => entry.event === 'auto_review.decision')
+      .map(({ event, outcome, errorCategory }) => ({ event, outcome, errorCategory }))
+
+    expect(
+      normalise({ ...result, decisions, executed: existsSync(join(workspace.cwd, 'executed.txt')) }),
+    ).toStrictEqual({
+      details: [{ ...bashRequest(call.id), origin: 'global', target: undefined, toolInputPreview: undefined }],
+      prompts: [],
+      events: [{ authorizer: call.id }],
+      reviewerCalls: 0,
+      decisions: [{ event: 'auto_review.decision', outcome: 'defer', errorCategory: 'authority-edited' }],
+      executed: false,
+    })
   })
 
   it('does not review or execute a deterministically denied command', async () => {

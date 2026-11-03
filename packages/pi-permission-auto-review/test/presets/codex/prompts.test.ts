@@ -1,9 +1,10 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
+import { buildSessionProjection } from '@earendil-works/pi-coding-agent'
 import { expect, it } from 'vitest'
 import { DEFAULT_CONFIG } from '../../../src/config/config.js'
 import { buildSystemPrompt } from '../../../src/presets/codex/policy.js'
 import { buildFollowUpPrompt, buildReviewPrompt } from '../../../src/presets/codex/review-prompt.js'
-import { renderTranscript } from '../../../src/presets/codex/transcript.js'
+import { renderTranscript as render } from '../../../src/presets/codex/transcript.js'
 import { permissionDetails, provenanceEntry, shellAction } from '../../helpers.js'
 
 function messageEntry(id: string, message: Record<string, unknown>): SessionEntry {
@@ -35,6 +36,12 @@ const BRANCH = [
     timestamp: 0,
   }),
 ]
+function renderTranscript(entries: SessionEntry[], from?: number) {
+  const chained = entries.map((entry, index) => ({ ...entry, parentId: entries[index - 1]?.id ?? null }))
+
+  return render(chained, buildSessionProjection(chained), from === undefined ? {} : { from })
+}
+
 const DETAILS = permissionDetails({ toolCallId: 'call-2', command: 'git push --tags' })
 
 // The text codex-auto-review reads, pinned so that only a deliberate port changes it

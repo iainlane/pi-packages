@@ -13,6 +13,7 @@ import type { Mock } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { buildSessionProjection } from '@earendil-works/pi-coding-agent'
 import { afterEach, beforeEach, vi } from 'vitest'
 import { inputDigest } from '../src/action/json.js'
 import { mergeConfig } from '../src/config/config.js'
@@ -246,7 +247,13 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
     },
     context: {
       modelRegistry: registry,
-      sessionManager: { getBranch: () => [...branch], getSessionId: () => 'session-1' },
+      sessionManager: {
+        getBranch: () => [...branch],
+        // The fixture entries are not chained, so the projection follows the branch order rather than parent links
+        buildSessionProjection: () =>
+          buildSessionProjection(branch.map((entry, index) => ({ ...entry, parentId: branch[index - 1]?.id ?? null }))),
+        getSessionId: () => 'session-1',
+      },
       signal: options.turnSignal,
     } as never,
     provenance: { flush: () => {} },

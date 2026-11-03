@@ -2,7 +2,7 @@ import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig, PresetName, RuleListName } from '../config/config.js'
 import type { ReviewConversation } from '../reviewer/conversation.js'
 import type { CallFailure, ModelCall } from '../reviewer/model-call.js'
-import type { SessionEntry } from '@earendil-works/pi-coding-agent'
+import type { SessionEntry, SessionProjection } from '@earendil-works/pi-coding-agent'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { CLAUDE_CODE_PRESET } from './claude-code/preset.js'
 import { CODEX_PRESET } from './codex/preset.js'
@@ -15,6 +15,8 @@ export interface ContextFile {
 interface ReviewInput {
   config: AutoReviewConfig
   branch: SessionEntry[]
+  /** The context that the agent's model sees: compaction and context edits applied to `branch` */
+  projection: SessionProjection
   details: PromptPermissionDetails
   /** The complete input of the call that raised the ask, captured before pi-permission-system asked */
   action: ReviewAction
@@ -26,7 +28,7 @@ interface ReviewInput {
 }
 
 /** A model call's failure, or evidence that the preset will not put in front of a model */
-export type ReviewFailure = CallFailure | 'provenance-uncertain'
+export type ReviewFailure = CallFailure | 'provenance-uncertain' | 'authority-edited' | 'authority-over-budget'
 
 /** Logged with the decision: never the reviewer's prose, and no key naming a token or an authorization, which the log masks */
 export type ReviewFields = Record<string, string | number | boolean>

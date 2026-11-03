@@ -57,6 +57,42 @@ process and records these facts.
   the typed text counts and the expansion is untrusted. A message that the
   extension cannot attribute with confidence defers every review on its
   branch.
+- See [context edits and compaction](#context-edits-and-compaction) for how
+  the `codex` preset builds its evidence.
+
+## Context edits and compaction
+
+Codex keeps user messages out of ordinary transcript truncation, keeps them
+across compaction and counts them first against its message allowance. The
+`codex` preset does the same. Verified user messages and recognised question
+answers come from the raw branch in full, so compaction does not remove them.
+Everything else comes from `buildSessionProjection()`, the context that the
+agent's model sees, with Codex's caps: 5,000 tokens for each message, 1,000
+for each tool record and 10,000 for tool records in total, the 40 newest
+records, and the 5 newest tool records always kept. Entries before a
+compaction cut appear only through the compaction summary, which cannot
+establish authorization.
+
+User evidence counts against the 20,000-token message allowance before
+anything else, which only crowds out other records. When the whole request
+would not fit the reviewer model's context window, other records are left out
+first, oldest first. If the user evidence alone still does not fit, user
+records longer than 900 tokens are shortened, oldest first, keeping their start
+and end. As in Codex, a shorter user record is never shortened, so a short
+restriction stays whole. The review defers only when the evidence still cannot
+fit.
+
+A `context_edit` takes precedence over both sources, and the reviewer never
+receives text that an edit removed or replaced. When an edit removes or
+replaces a verified user message or a recognised answer, the review defers:
+an extension can write such an edit, and removing a later restriction would
+otherwise leave an earlier permission standing. Edits of other entries only
+change the evidence, and a replaced user message that was not authority
+reaches the reviewer as an untrusted `edited_user` record.
+
+A follow-up review continues the earlier reviews' conversation with only what
+the session added. It starts over in full after a context edit or compaction,
+because either can change what the earlier reviews saw.
 
 ## Provenance trust
 

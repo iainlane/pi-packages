@@ -8,7 +8,7 @@ import type {
 } from '@gotgenes/pi-permission-system'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { getAgentDir } from '@earendil-works/pi-coding-agent'
+import { buildSessionProjection, getAgentDir } from '@earendil-works/pi-coding-agent'
 import {
   PERMISSIONS_READY_CHANNEL,
   publishPermissionsService,
@@ -94,7 +94,11 @@ describe('permission auto-review extension', () => {
     const context = {
       cwd: workspace.cwd,
       modelRegistry: registry,
-      sessionManager: { getBranch: () => [], getSessionId: () => SESSION_ID },
+      sessionManager: {
+        getBranch: () => [],
+        buildSessionProjection: () => buildSessionProjection([]),
+        getSessionId: () => SESSION_ID,
+      },
       ui: { setStatus },
       isProjectTrusted: () => projectTrusted,
     }

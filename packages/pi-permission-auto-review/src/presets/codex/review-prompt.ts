@@ -11,14 +11,9 @@ export interface ReviewPrompt {
 }
 
 function renderEvidence(transcript: RenderedTranscript): string {
-  const renderedTranscript =
-    transcript.entries.length > 0
-      ? transcript.entries.join('\n')
-      : JSON.stringify({ source: 'metadata', retainedEntries: 0 })
-  const omittedEntries = transcript.stats.transcriptEntriesOmitted
-  const omission = omittedEntries > 0 ? `\n${JSON.stringify({ source: 'metadata', omittedEntries })}` : ''
-
-  return `${renderedTranscript}${omission}`
+  return transcript.entries.length > 0
+    ? transcript.entries.join('\n')
+    : JSON.stringify({ source: 'metadata', retainedEntries: 0 })
 }
 
 // The session id and digest identify the capture for this extension; they tell the reviewer nothing about the action

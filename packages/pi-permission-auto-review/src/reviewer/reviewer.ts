@@ -81,6 +81,7 @@ async function runReview(
       {
         config,
         branch: context.sessionManager.getBranch(),
+        projection: context.sessionManager.buildSessionProjection(),
         details,
         action,
         contextFiles: runtime.contextFiles(),

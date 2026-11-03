@@ -1,9 +1,11 @@
 import type { Preset } from '../presets.js'
 import { nextConversation, prepareReview } from '../../reviewer/conversation.js'
+import { OUTPUT_RESERVE_TOKENS } from '../../reviewer/model-call.js'
+import { approximateTokens } from '../../text.js'
 import { DenialCircuitBreaker } from './circuit-breaker.js'
 import { BUILT_IN_RULES, buildSystemPrompt, POLICY_REVISION } from './policy.js'
 import { buildFollowUpPrompt, buildUserPrompt } from './review-prompt.js'
-import { renderTranscript } from './transcript.js'
+import { evidenceChangedSince, manifestFields, renderTranscript } from './transcript.js'
 import { parseReviewAssessment } from './verdict.js'
 
 // Verbatim `REJECTION_INSTRUCTIONS` from openai/codex `codex-rs/prompts/src/model_messages/guardian.rs`
@@ -15,24 +17,54 @@ export const CODEX_PRESET: Preset = {
   builtInRules: BUILT_IN_RULES,
   createLimiter: () => new DenialCircuitBreaker(),
   async review(input, complete) {
-    const { config, branch, details, action } = input
+    const { config, branch, projection, details, action, contextWindow } = input
+    const systemPrompt = buildSystemPrompt(config)
+    // The earlier reviews saw text that a later context edit or compaction may have removed
+    const cursorIndex =
+      input.conversation === undefined ? -1 : branch.findIndex(entry => entry.id === input.conversation?.cursor.entryId)
+    const conversation =
+      input.conversation !== undefined && cursorIndex >= 0 && !evidenceChangedSince(branch, cursorIndex)
+        ? input.conversation
+        : undefined
     const { request, transcript, priorReviews } = prepareReview(
-      input,
-      { systemPrompt: buildSystemPrompt(config), reasoning: config.reasoning },
+      { ...input, conversation },
+      { systemPrompt, reasoning: config.reasoning },
       after => {
-        if (after === undefined) {
-          const full = renderTranscript(branch)
+        if (after !== undefined) {
+          const delta = renderTranscript(branch, projection, { from: after.entryIndex + 1 })
 
-          return { content: buildUserPrompt(full, details, action), transcript: full }
+          return { content: buildFollowUpPrompt(delta, details, action), transcript: delta }
         }
-        const delta = renderTranscript(branch, after.entryIndex + 1)
+        const full = renderTranscript(branch, projection)
+        const excess = (content: string): number =>
+          approximateTokens(systemPrompt + content) + OUTPUT_RESERVE_TOKENS - contextWindow
+        let rendered = { content: buildUserPrompt(full, details, action), transcript: full }
+        let budget = full.tokens - excess(rendered.content)
+        // Like Codex, leave out other records and then shorten long user evidence before giving up on a review that
+        // would not fit the model. The estimate of the whole prompt differs a little from the sum of its records, so
+        // measure again after each try
+        for (let attempt = 0; attempt < 3 && excess(rendered.content) > 0 && budget > 0; attempt += 1) {
+          const shortened = renderTranscript(branch, projection, { budget })
+          rendered = { content: buildUserPrompt(shortened, details, action), transcript: shortened }
+          if (!shortened.manifest.authorityFits) {
+            break
+          }
+          budget -= excess(rendered.content)
+        }
 
-        return { content: buildFollowUpPrompt(delta, details, action), transcript: delta }
+        return rendered
       },
     )
-    const fields = { ...transcript.stats, priorReviews }
-    if (transcript.stats.provenanceUncertain) {
+    const { manifest } = transcript
+    const fields = { ...manifestFields(manifest), priorReviews }
+    if (manifest.provenanceUncertain) {
       return { kind: 'failed', failure: 'provenance-uncertain', fields }
+    }
+    if (manifest.authorityEdited) {
+      return { kind: 'failed', failure: 'authority-edited', fields }
+    }
+    if (!manifest.authorityFits) {
+      return { kind: 'failed', failure: 'authority-over-budget', fields }
     }
     const result = await complete(request, parseReviewAssessment)
     if (!result.ok) {
