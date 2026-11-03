@@ -1,8 +1,8 @@
 import type { AutoReviewConfig } from '../config/config.js'
 import type { InvestigationRun } from '../investigation/investigation.js'
+import type { ReviewModelRegistry } from './model.js'
 import type { JsonSchema } from './output-format.js'
 import type { Api, AssistantMessage, Message, Model, ToolCall, ToolChoice, Usage } from '@earendil-works/pi-ai'
-import type { ModelRegistry } from '@earendil-works/pi-coding-agent'
 import { clampThinkingLevel, isRetryableAssistantError } from '@earendil-works/pi-ai'
 import { approximateTokens } from '../text.js'
 import { outputFormatHook } from './output-format.js'
@@ -56,7 +56,7 @@ type CallReply<T> =
 export type ModelCall = <T>(request: ModelRequest, parse: (text: string) => T) => Promise<CallResult<T>>
 
 export interface ModelCallOptions {
-  registry: ModelRegistry
+  registry: ReviewModelRegistry
   model: Model<Api>
   config: AutoReviewConfig
   sessionId: string

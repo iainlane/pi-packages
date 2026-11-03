@@ -3,6 +3,16 @@ import type { Api, Model } from '@earendil-works/pi-ai'
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent'
 import { CODEX_AUTO_REVIEW_MODEL, CODEX_PROVIDER } from '../config/config.js'
 
+/** The parts of Pi's model registry that a review uses */
+export interface ReviewModelRegistry {
+  getProvider: (
+    provider: string,
+  ) => Pick<NonNullable<ReturnType<ModelRegistry['getProvider']>>, 'getModels'> | undefined
+  getAll: ModelRegistry['getAll']
+  find: ModelRegistry['find']
+  streamSimple: ModelRegistry['streamSimple']
+}
+
 export type ResolveReviewModelResult =
   | { ok: true; value: Model<Api> }
   | { ok: false; category: 'provider-unresolved' | 'model-unresolved' }
@@ -10,7 +20,10 @@ export type ResolveReviewModelResult =
 const CODEX_API = 'openai-codex-responses'
 
 /** `codex-auto-review` is hidden from the registry, so it is derived from another model of the Codex provider */
-export function resolveReviewModel(registry: ModelRegistry, config: AutoReviewConfig): ResolveReviewModelResult {
+export function resolveReviewModel(
+  registry: Pick<ReviewModelRegistry, 'getProvider' | 'getAll' | 'find'>,
+  config: AutoReviewConfig,
+): ResolveReviewModelResult {
   const provider = registry.getProvider(config.provider)
   if (provider === undefined) {
     return { ok: false, category: 'provider-unresolved' }

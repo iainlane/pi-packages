@@ -5,6 +5,7 @@ import type { ContextFile, Preset, ReviewFailure, ReviewFields, ReviewOutcome } 
 import type { UserMessageProvenance } from '../provenance/provenance.js'
 import type { ReviewConversation } from './conversation.js'
 import type { CallUsage, ModelCall } from './model-call.js'
+import type { ReviewModelRegistry } from './model.js'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type { Authorizer, AuthorizerVerdict, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { PRESETS } from '../presets/presets.js'
@@ -28,7 +29,8 @@ export interface ReviewerRuntime {
   actions: Pick<ActionCapture, 'resolve' | 'registryDigest'>
   provenance: Pick<UserMessageProvenance, 'flush'>
   /** Read at every review, since `signal` belongs to the turn in progress */
-  context: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal' | 'abort' | 'hasUI'> & {
+  context: Pick<ExtensionContext, 'sessionManager' | 'signal' | 'abort' | 'hasUI'> & {
+    modelRegistry: ReviewModelRegistry
     ui: Pick<ExtensionContext['ui'], 'notify'>
   }
   /** The context files the user's trust covers, as of the latest run */

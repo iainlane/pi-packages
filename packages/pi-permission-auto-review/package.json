@@ -57,6 +57,7 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:live": "vitest run --config vitest.live.config.ts",
     "test:watch": "vitest",
     "gen:schema": "node --experimental-strip-types scripts/generate-schema.ts",
     "sync:guardian-policy": "node --experimental-strip-types scripts/sync-guardian-policy.ts",
