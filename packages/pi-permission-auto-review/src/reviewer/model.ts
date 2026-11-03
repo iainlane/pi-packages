@@ -14,7 +14,8 @@ export interface ReviewModelRegistry {
 }
 
 export type ResolveReviewModelResult =
-  | { ok: true; value: Model<Api> }
+  /** `derived` marks a descriptor built from another model's, whose prices are therefore assumed */
+  | { ok: true; value: Model<Api>; derived: boolean }
   | { ok: false; category: 'provider-unresolved' | 'model-unresolved' }
 
 const CODEX_API = 'openai-codex-responses'
@@ -30,7 +31,7 @@ export function resolveReviewModel(
   }
   const registered = registry.find(config.provider, config.model)
   if (registered !== undefined) {
-    return { ok: true, value: registered }
+    return { ok: true, value: registered, derived: false }
   }
   if (config.provider !== CODEX_PROVIDER || config.model !== CODEX_AUTO_REVIEW_MODEL) {
     return { ok: false, category: 'model-unresolved' }
@@ -51,5 +52,6 @@ export function resolveReviewModel(
           reasoning: true,
           input: ['text'],
         },
+        derived: true,
       }
 }

@@ -1,6 +1,7 @@
 import type { ActionResolution } from '../src/action/capture.js'
 import type { ReviewAction } from '../src/action/schema.js'
 import type { AutoReviewConfig } from '../src/config/config.js'
+import type { ReviewStatistics } from '../src/statistics/recorder.js'
 import type { AssistantMessage, Context, SimpleStreamOptions, ThinkingLevelMap, Usage } from '@earendil-works/pi-ai'
 import type { ModelRegistry, SessionEntry } from '@earendil-works/pi-coding-agent'
 import type {
@@ -261,6 +262,7 @@ interface ReviewerHarnessOptions {
   /** Whether the session has a UI to show warnings in; true by default */
   hasUI?: boolean
   investigation?: Pick<Investigation, 'availability' | 'forReview'>
+  statistics?: ReviewStatistics
   /** What the action capture answers for each ask; by default the bash command that the ask names */
   resolve?: (details: PromptPermissionDetails) => ActionResolution
 }
@@ -286,6 +288,7 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
     api: 'openai-responses',
     reasoning: true,
     contextWindow: options.contextWindow ?? 200_000,
+    cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0 },
     thinkingLevelMap: options.thinkingLevelMap,
   }
   const registry = {
@@ -321,6 +324,7 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
     contextFiles: () => [],
     sessionSignal: new AbortController().signal,
     ...(options.investigation === undefined ? {} : { investigation: options.investigation }),
+    ...(options.statistics === undefined ? {} : { statistics: options.statistics }),
   })
 
   const start: ReviewStart = (requestId = 'request-1', details = {}) => {

@@ -1,3 +1,5 @@
+import type { LateUsage } from '../../src/statistics/calls.js'
+import type { ReviewReport } from '../../src/statistics/recorder.js'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -478,6 +480,132 @@ describe('permission reviewer', () => {
       expect(entries[0]?.[1]).toMatchObject({ errorCategory: 'cancelled', durationMs: 100 })
       expect(harness.streamSimple).toHaveBeenCalledOnce()
       expect(vi.getTimerCount()).toBe(0)
+    })
+  })
+
+  describe('statistics', () => {
+    function sink() {
+      const reports: [string, ReviewReport][] = []
+      const late: LateUsage[] = []
+
+      return {
+        reports,
+        late,
+        statistics: {
+          review: (id: string, report: ReviewReport) => reports.push([id, report]),
+          late: (usage: LateUsage) => late.push(usage),
+        },
+      }
+    }
+
+    it('reports each verdict with its calls, their usage and an estimated cost', async () => {
+      const recorded = sink()
+      const failed = { ...overloaded(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } }
+      const harness = createHarness({
+        statistics: recorded.statistics,
+        replies: [failed as AssistantMessage, reply(ALLOW)],
+      })
+      await harness.authorize()
+
+      expect(recorded.reports).toStrictEqual([
+        [
+          'request-1',
+          {
+            outcome: 'allow',
+            failure: undefined,
+            circuitTripped: undefined,
+            durationMs: expect.any(Number) as unknown,
+            investigationCalls: 0,
+            investigationRefusals: 0,
+            calls: [
+              {
+                outcome: 'failed',
+                id: expect.any(String) as unknown,
+                provider: 'custom-review',
+                model: 'review-model',
+                phase: 'initial',
+              },
+              {
+                outcome: 'reported',
+                provider: 'custom-review',
+                model: 'review-model',
+                phase: 'retry',
+                usage: { input: 100, output: 10, cacheRead: 40, cacheWrite: 0, cacheWrite1h: 0 },
+                costUsd: (100 * 1 + 10 * 2 + 40 * 0.5) / 1_000_000,
+                pricing: 'catalogue',
+              },
+            ],
+          },
+        ],
+      ])
+    })
+
+    it('keeps the usage of a call abandoned at its timeout when its result arrives before the review ends', async () => {
+      const recorded = sink()
+      const lateDenial = new Promise<AssistantMessage>(resolve => setTimeout(resolve, 1_100, reply(DENY)))
+      const harness = createHarness({
+        statistics: recorded.statistics,
+        config: { attemptTimeoutMs: 1_000 },
+        replies: [lateDenial, reply(ALLOW)],
+      })
+      await harness.authorize()
+
+      expect(recorded.reports[0]?.[1].calls.map(call => call.outcome)).toStrictEqual(['reported', 'reported'])
+    })
+
+    it('reports an ask that it did not review with the reason', async () => {
+      const recorded = sink()
+      const harness = createHarness({ statistics: recorded.statistics, resolve: () => ({ kind: 'forwarded' }) })
+      await harness.authorize()
+
+      expect(recorded.reports.map(([, report]) => [report.outcome, report.failure, report.calls])).toStrictEqual([
+        ['defer', 'forwarded-ineligible', []],
+      ])
+    })
+
+    it('reports usage that arrives after an interrupted review as late usage of its pending call', async () => {
+      const recorded = sink()
+      const turn = new AbortController()
+      const pending = Promise.withResolvers<AssistantMessage>()
+      const requested = Promise.withResolvers<void>()
+      const harness = createHarness({
+        statistics: recorded.statistics,
+        turnSignal: turn.signal,
+        replies: [
+          async () => {
+            requested.resolve()
+            return pending.promise
+          },
+        ],
+      })
+      const { verdict } = harness.start()
+      await requested.promise
+      turn.abort()
+      await verdict
+      pending.resolve(reply(ALLOW))
+      await vi.waitFor(() => expect(recorded.late).toHaveLength(1))
+      const [, report] = recorded.reports[0] ?? []
+      const [call] = report?.calls ?? []
+
+      expect({ call, late: recorded.late }).toStrictEqual({
+        call: {
+          outcome: 'pending',
+          id: expect.any(String) as unknown,
+          provider: 'custom-review',
+          model: 'review-model',
+          phase: 'initial',
+        },
+        late: [
+          {
+            call: call?.outcome === 'pending' ? call.id : undefined,
+            provider: 'custom-review',
+            model: 'review-model',
+            usage: { input: 100, output: 10, cacheRead: 40, cacheWrite: 0, cacheWrite1h: 0 },
+            costUsd: (100 * 1 + 10 * 2 + 40 * 0.5) / 1_000_000,
+            pricing: 'catalogue',
+          },
+        ],
+      })
     })
   })
 

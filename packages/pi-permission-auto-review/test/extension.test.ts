@@ -19,6 +19,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EXTENSION_ID } from '../src/config/config.js'
 import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
+import { STATISTICS_ENTRY_TYPE } from '../src/statistics/records.js'
+import { GlobalStatisticsStore } from '../src/statistics/store.js'
 import { permissionDetails, useWorkspace, writeFile } from './helpers.js'
 
 const sandbox = vi.hoisted(() => ({ negotiation: undefined as unknown }))
@@ -83,7 +85,8 @@ describe('permission auto-review extension', () => {
   function start(registry: ModelRegistry = reviewRegistry(DENY).registry, projectTrusted = true) {
     const handlers = new Map<string, Handler[]>()
     const eventHandlers = new Map<string, Handler[]>()
-    let command: Omit<RegisteredCommand, 'name' | 'sourceInfo'> | undefined
+    const commands = new Map<string, Omit<RegisteredCommand, 'name' | 'sourceInfo'>>()
+    const appendEntry = vi.fn<(type: string, data: unknown) => void>()
     const add = (target: Map<string, Handler[]>, name: string, handler: Handler): void => {
       target.set(name, [...(target.get(name) ?? []), handler])
     }
@@ -91,9 +94,10 @@ describe('permission auto-review extension', () => {
       on: (name: string, handler: Handler) => add(handlers, name, handler),
       getAllTools: () => [],
       events: { on: (name: string, handler: Handler) => add(eventHandlers, name, handler) },
-      registerCommand: (_name: string, options: typeof command) => {
-        command = options
+      registerCommand: (name: string, options: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
+        commands.set(name, options)
       },
+      appendEntry,
     }
     permissionAutoReview(pi as unknown as ExtensionAPI)
 
@@ -111,6 +115,7 @@ describe('permission auto-review extension', () => {
         buildSessionProjection: () => buildSessionProjection([]),
         getSessionId: () => SESSION_ID,
         getLeafId: () => null,
+        getEntries: () => [],
       },
       ui: { setStatus, notify: vi.fn() },
       hasUI: true,
@@ -130,6 +135,11 @@ describe('permission auto-review extension', () => {
         )
       },
       shutdown: () => emit('session_shutdown', {}, context),
+      /** Waits for the shutdown handlers, which let reviews in progress record their verdicts */
+      shutdownAndWait: async () => {
+        await Promise.all((handlers.get('session_shutdown') ?? []).map(handler => handler({}, context)))
+      },
+      appendEntry,
       setStatus,
       ready(sessionId: string | null = SESSION_ID) {
         for (const handler of eventHandlers.get(PERMISSIONS_READY_CHANNEL) ?? []) {
@@ -138,7 +148,7 @@ describe('permission auto-review extension', () => {
       },
       notify,
       async run(args: string) {
-        await command?.handler(args, {
+        await commands.get('permission-auto-review')?.handler(args, {
           ...context,
           mode: 'tui',
           hasUI: true,
@@ -361,6 +371,59 @@ describe('permission auto-review extension', () => {
 
     await vi.waitFor(() => expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, status))
     expect(warn.mock.calls).toStrictEqual(warnings)
+  })
+
+  it('records a review that shutdown cancels in the session, and its late result only globally', async () => {
+    const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(registerAuthorizer)
+    const { registry, streamSimple } = reviewRegistry(DENY)
+    const late = Promise.withResolvers<unknown>()
+    const requested = Promise.withResolvers<void>()
+    streamSimple.mockImplementationOnce(() => {
+      requested.resolve()
+
+      return { result: async () => late.promise as never }
+    })
+    const harness = start(registry)
+    harness.start()
+    harness.ready()
+    const verdict = review(registerAuthorizer.mock.calls[0]?.[1])
+    await requested.promise
+    const written = (): unknown[][] =>
+      harness.appendEntry.mock.calls.map(([type, data]) => [type, (data as { outcome?: string }).outcome])
+
+    await harness.shutdownAndWait()
+    const atShutdown = written()
+    late.resolve({
+      role: 'assistant',
+      content: [{ type: 'text', text: DENY }],
+      stopReason: 'stop',
+      usage: { input: 70, output: 7, cacheRead: 0, cacheWrite: 0 },
+    })
+    const directory = join(getAgentDir(), 'extensions', EXTENSION_ID, 'statistics')
+    const global = await vi.waitFor(
+      () => {
+        const store = GlobalStatisticsStore.open(directory, 0)
+        const { summary } = store.snapshot()
+        store.close()
+        expect(summary.tokens.input).toBe(70)
+
+        return summary
+      },
+      { timeout: 3_000 },
+    )
+
+    expect({
+      verdict: (await verdict).verdict?.kind,
+      atShutdown,
+      afterLateResult: written(),
+      global: { reviews: global.reviews, unreported: global.unreportedCalls, issues: global.issues },
+    }).toStrictEqual({
+      verdict: 'deny',
+      atShutdown: [[STATISTICS_ENTRY_TYPE, 'deny']],
+      afterLateResult: [[STATISTICS_ENTRY_TYPE, 'deny']],
+      global: { reviews: { allow: 0, deny: 1, defer: 0 }, unreported: 0, issues: { 'recorded-after-session': 1 } },
+    })
   })
 
   it('hot-swaps the reviewer generation after a config reset, closing the circuit', async () => {

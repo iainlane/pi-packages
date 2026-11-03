@@ -12,7 +12,7 @@ import type {
   PermissionsService,
 } from '@gotgenes/pi-permission-system'
 import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from '@gotgenes/pi-permission-system'
 import { ActionCapture } from './action/capture.js'
@@ -23,8 +23,13 @@ import { Investigation } from './investigation/investigation.js'
 import { PRESETS } from './presets/presets.js'
 import { UserMessageProvenance } from './provenance/provenance.js'
 import { createPermissionReviewer } from './reviewer/reviewer.js'
+import { registerStatisticsCommand } from './statistics/command.js'
+import { StatisticsRecorder } from './statistics/recorder.js'
 
 const AUTHORIZER_NAME = 'auto-review'
+// Long enough for a cancelled review to record its verdict, short enough not to hold up Pi's exit for a provider
+// that ignores the abort
+const SHUTDOWN_WAIT_MS = 2_000
 const VERDICT_LABELS = [
   ['allow', 'allowed'],
   ['deny', 'denied'],
@@ -88,6 +93,11 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   const actions = new ActionCapture(pi)
   const provenance = new UserMessageProvenance(pi)
   const investigation = new Investigation(pi)
+  const recorder = new StatisticsRecorder(pi, {
+    directory: () => join(getAgentDir(), 'extensions', EXTENSION_ID, 'statistics'),
+  })
+  // Authorize calls in progress, which shutdown lets finish recording their verdicts
+  const outstanding = new Set<Promise<AuthorizerVerdict>>()
   // Negotiated at each session start; undefined until the sandbox provider answers
   let investigationStatus: InvestigationAvailability | undefined
   let sessionStarts = 0
@@ -116,6 +126,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
             context: runtime,
             contextFiles: () => contextFiles,
             investigation,
+            statistics: recorder.sink(),
             get sessionSignal() {
               return AbortSignal.any([controller.signal, history.controller.signal])
             },
@@ -127,7 +138,14 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
       history,
       resetTurn: reviewer.resetTurn,
       authorize: async (details, query, log) => {
-        const verdict = await reviewer.authorize(details, query, log)
+        const pending = reviewer.authorize(details, query, log)
+        outstanding.add(pending)
+        let verdict: AuthorizerVerdict
+        try {
+          verdict = await pending
+        } finally {
+          outstanding.delete(pending)
+        }
         // A retired generation answers for a session or config that is gone
         if (generation === created) {
           tally[verdict.kind] += 1
@@ -204,6 +222,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     }
     tally = { allow: 0, deny: 0, defer: 0 }
     contextFiles = []
+    recorder.start(ctx.sessionManager)
     generation = createGeneration(ctx, result.config)
     renderStatus(generation)
     investigationStatus = undefined
@@ -276,13 +295,22 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   pi.on('session_before_switch', cancelReviews)
   pi.on('session_before_fork', cancelReviews)
 
-  pi.on('session_shutdown', (_event, ctx) => {
+  pi.on('session_shutdown', async (_event, ctx) => {
     ctx.ui.setStatus(EXTENSION_ID, undefined)
     retire(generation)
     generation = undefined
     sessionId = undefined
     warnedMissingSessionId = false
+    const { promise: waited, resolve: stopWaiting } = Promise.withResolvers<void>()
+    setTimeout(stopWaiting, SHUTDOWN_WAIT_MS).unref()
+    await Promise.race([Promise.allSettled([...outstanding]), waited])
+    recorder.close()
   })
 
   registerAutoReviewCommand(pi, { getActiveConfig: () => generation?.config, applyConfig })
+  registerStatisticsCommand(pi, recorder, () => ({
+    registered: generation?.dispose !== undefined,
+    config: generation?.config,
+    investigation: investigationStatus,
+  }))
 }

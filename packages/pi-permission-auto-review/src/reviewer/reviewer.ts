@@ -3,12 +3,14 @@ import type { AutoReviewConfig } from '../config/config.js'
 import type { Investigation, InvestigationRun } from '../investigation/investigation.js'
 import type { ContextFile, Preset, ReviewFailure, ReviewFields, ReviewOutcome } from '../presets/presets.js'
 import type { UserMessageProvenance } from '../provenance/provenance.js'
+import type { ReviewStatistics } from '../statistics/recorder.js'
 import type { ReviewConversation } from './conversation.js'
 import type { CallUsage, ModelCall } from './model-call.js'
 import type { ReviewModelRegistry } from './model.js'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type { Authorizer, AuthorizerVerdict, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { PRESETS } from '../presets/presets.js'
+import { CallLog } from '../statistics/calls.js'
 import { createModelCall } from './model-call.js'
 import { resolveReviewModel } from './model.js'
 import { captureSnapshot, validateSnapshot } from './snapshot.js'
@@ -39,6 +41,8 @@ export interface ReviewerRuntime {
   sessionSignal: AbortSignal
   /** The session's sandbox for inspecting local state, for presets that investigate */
   investigation?: Pick<Investigation, 'availability' | 'forReview'>
+  /** Receives every verdict with the calls behind it */
+  statistics?: ReviewStatistics
 }
 
 export interface PermissionReviewer {
@@ -51,9 +55,18 @@ type AttemptResult =
   | Exclude<ReviewOutcome, { kind: 'failed' }>
   | { kind: 'failed'; failure: FailureCategory; fields: ReviewFields }
 
-type ReviewResult =
-  | (Exclude<ReviewOutcome, { kind: 'failed' }> & { usage: CallUsage })
-  | { kind: 'failed'; failure: FailureCategory; fields?: ReviewFields; usage?: CallUsage }
+/** The model calls of a review and its investigation calls, for statistics */
+interface ReviewWork {
+  calls?: CallLog | undefined
+  investigationCalls?: number
+  investigationRefusals?: number
+}
+
+type ReviewResult = ReviewWork &
+  (
+    | (Exclude<ReviewOutcome, { kind: 'failed' }> & { usage: CallUsage })
+    | { kind: 'failed'; failure: FailureCategory; fields?: ReviewFields; usage?: CallUsage }
+  )
 
 /**
  * Reviews until a verdict still applies to the session as it is when the verdict arrives. New user evidence, which
@@ -147,6 +160,8 @@ async function runReview(
     }
     const model = resolved.value
     const usage = { input: 0, cacheRead: 0, output: 0 }
+    const { statistics } = runtime
+    const calls = statistics === undefined ? undefined : new CallLog(late => statistics.late(late), resolved.derived)
     const investigation =
       preset.investigates && runtime.investigation !== undefined
         ? await startInvestigation(runtime.investigation, signal)
@@ -161,6 +176,7 @@ async function runReview(
       deadline,
       usage,
       investigation,
+      calls,
     })
     const outcome = await reviewCurrentEvidence(runtime, preset, details, conversation, {
       complete,
@@ -172,7 +188,14 @@ async function runReview(
         ? {}
         : { investigationCalls: investigation.calls, investigationBytes: investigation.bytes }
 
-    return { ...outcome, fields: { ...outcome.fields, ...investigated }, usage }
+    return {
+      ...outcome,
+      fields: { ...outcome.fields, ...investigated },
+      usage,
+      calls,
+      investigationCalls: investigation?.calls ?? 0,
+      investigationRefusals: investigation?.refusals ?? 0,
+    }
   } finally {
     clearTimeout(timeout)
   }
@@ -194,7 +217,24 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
       log.review(DECISION_EVENT, entry)
       log.debug('auto_review.failure', entry)
     }
-    const refuseOpenCircuit = (reason: string): AuthorizerVerdict => {
+    // Every verdict leaves through here, so the statistics count each ask that this reviewer answered
+    const finish = (
+      verdict: AuthorizerVerdict,
+      outcome: { failure?: string; circuitTripped?: true; work?: ReviewWork } = {},
+    ): AuthorizerVerdict => {
+      runtime.statistics?.review(details.requestId, {
+        outcome: verdict.kind,
+        failure: outcome.failure,
+        circuitTripped: outcome.circuitTripped,
+        durationMs: elapsed(),
+        investigationCalls: outcome.work?.investigationCalls ?? 0,
+        investigationRefusals: outcome.work?.investigationRefusals ?? 0,
+        calls: outcome.work?.calls?.finish() ?? [],
+      })
+
+      return verdict
+    }
+    const refuseOpenCircuit = (reason: string, work?: ReviewWork): AuthorizerVerdict => {
       log.review('auto_review.circuit_open', {
         ...entryBase,
         outcome: 'deny',
@@ -202,7 +242,7 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         errorCategory: 'circuit-open',
       })
 
-      return { kind: 'deny', reason }
+      return finish({ kind: 'deny', reason }, { failure: 'circuit-open', ...(work === undefined ? {} : { work }) })
     }
     // As Codex does, stop the agent instead of letting it look for a way around denial after denial
     const interruptTurn = (reason: string): void => {
@@ -220,14 +260,10 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
     try {
       const resolved = runtime.actions.resolve(details, runtime.context.sessionManager.getSessionId())
       if (resolved.kind !== 'eligible') {
-        log.review(DECISION_EVENT, {
-          ...entryBase,
-          outcome: 'defer',
-          errorCategory: resolved.kind === 'forwarded' ? 'forwarded-ineligible' : resolved.kind,
-          durationMs: elapsed(),
-        })
+        const failure = resolved.kind === 'forwarded' ? 'forwarded-ineligible' : resolved.kind
+        log.review(DECISION_EVENT, { ...entryBase, outcome: 'defer', errorCategory: failure, durationMs: elapsed() })
 
-        return { kind: 'defer' }
+        return finish({ kind: 'defer' }, { failure })
       }
       const { action } = resolved
       const refusal = limiter.refusal()
@@ -239,7 +275,7 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
       // Another review tripped the circuit while this one ran
       const lateRefusal = limiter.refusal()
       if (lateRefusal !== undefined) {
-        return refuseOpenCircuit(lateRefusal)
+        return refuseOpenCircuit(lateRefusal, result)
       }
       const durationMs = elapsed()
       const diagnostics = {
@@ -263,7 +299,7 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         limiter.recordNonDenial()
         logFailure({ ...entryBase, outcome: verdict.kind, errorCategory: result.failure, durationMs, ...diagnostics })
 
-        return verdict
+        return finish(verdict, { failure: result.failure, work: result })
       }
 
       conversation = result.conversation
@@ -271,30 +307,30 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         limiter.recordNonDenial()
         log.review(DECISION_EVENT, { ...entryBase, outcome: 'allow', durationMs, ...diagnostics })
 
-        return { kind: 'allow' }
+        return finish({ kind: 'allow' }, { work: result })
       }
       const denialLimit = limiter.recordDenial()
       if (denialLimit !== undefined && limiter.limitAction === 'prompt') {
         log.review(DECISION_EVENT, { ...entryBase, outcome: 'defer', denialLimit, durationMs, ...diagnostics })
 
-        return { kind: 'defer' }
+        return finish({ kind: 'defer' }, { work: result })
       }
       if (denialLimit !== undefined) {
         interruptTurn(limiter.refusal() ?? result.reason)
         log.review(DECISION_EVENT, { ...entryBase, outcome: 'deny', denialLimit, durationMs, ...diagnostics })
 
-        return { kind: 'deny', reason: result.reason }
+        return finish({ kind: 'deny', reason: result.reason }, { circuitTripped: true, work: result })
       }
       log.review(DECISION_EVENT, { ...entryBase, outcome: 'deny', durationMs, ...diagnostics })
 
-      return { kind: 'deny', reason: result.reason }
+      return finish({ kind: 'deny', reason: result.reason }, { work: result })
     } catch {
       // The chain does not isolate a link that throws, so every internal failure has to leave as a verdict
       conversation = undefined
       limiter.recordNonDenial()
       logFailure({ ...entryBase, outcome: 'defer', errorCategory: 'internal-error', durationMs: elapsed() })
 
-      return { kind: 'defer' }
+      return finish({ kind: 'defer' }, { failure: 'internal-error' })
     }
   }
 

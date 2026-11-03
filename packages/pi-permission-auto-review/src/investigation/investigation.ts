@@ -86,6 +86,8 @@ interface CallOutcome {
   isError: boolean
   /** Command output or file content, which counts against the review's budget */
   bytes: number
+  /** Whether the sandbox refused the command */
+  refused?: boolean
 }
 
 /** A short reason for the footer and the log, such as "the selected sandbox cannot satisfy the requested policy" */
@@ -121,6 +123,7 @@ function shellOutcome(result: ProcessResult): CallOutcome {
     }),
     isError: failed,
     bytes: result.stdout.length + result.stderr.length,
+    refused,
   }
 }
 
@@ -260,6 +263,7 @@ export class InvestigationRun {
   private readonly signal: AbortSignal
   private readonly acquire: () => Promise<{ sandbox: Sandbox; cwd: string } | { unavailable: string }>
   private callCount = 0
+  private refusalCount = 0
   private outputBytes = 0
   private unavailable = false
 
@@ -274,6 +278,10 @@ export class InvestigationRun {
 
   get bytes(): number {
     return this.outputBytes
+  }
+
+  get refusals(): number {
+    return this.refusalCount
   }
 
   /** Whether the review has used its budget or lost its sandbox, so the reviewer must decide without more calls */
@@ -331,6 +339,7 @@ export class InvestigationRun {
       outcome = { text: `The ${call.name} call failed: ${describeError(error)}`, isError: true, bytes: 0 }
     }
     this.outputBytes += outcome.bytes
+    this.refusalCount += outcome.refused === true ? 1 : 0
 
     return outcome
   }

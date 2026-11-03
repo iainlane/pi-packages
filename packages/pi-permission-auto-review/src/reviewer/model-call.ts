@@ -1,5 +1,6 @@
 import type { AutoReviewConfig } from '../config/config.js'
 import type { InvestigationRun } from '../investigation/investigation.js'
+import type { CallLog } from '../statistics/calls.js'
 import type { ReviewModelRegistry } from './model.js'
 import type { JsonSchema } from './output-format.js'
 import type { Api, AssistantMessage, Message, Model, ToolCall, ToolChoice, Usage } from '@earendil-works/pi-ai'
@@ -69,6 +70,8 @@ export interface ModelCallOptions {
   usage: CallUsage
   /** The tools that the reviewer may call during this review, with their budget */
   investigation?: InvestigationRun | undefined
+  /** Records each call and its usage, including usage that arrives after the review ends */
+  calls?: CallLog | undefined
 }
 
 function abortError(): Error {
@@ -125,7 +128,7 @@ export function replyText(message: AssistantMessage): string {
 }
 
 export function createModelCall(options: ModelCallOptions): ModelCall {
-  const { registry, model, config, signal, timeoutSignal, deadline, usage, investigation } = options
+  const { registry, model, config, signal, timeoutSignal, deadline, usage, investigation, calls } = options
   const attemptTimeoutMs = config.attemptTimeoutMs ?? config.timeoutMs
   const aborted = (): { ok: false; failure: CallFailure } => ({
     ok: false,
@@ -147,6 +150,8 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
       const attemptTimeout = setTimeout(() => attemptController.abort(), attemptTimeoutMs)
       const attemptSignal = AbortSignal.any([signal, attemptController.signal])
       let failure: CallFailure = 'provider-error'
+      const recorded = calls?.start(model, attempt > 0)
+      let started = false
       try {
         // The registry resolves the provider's authentication per request, so an unusable login lands here
         const stream = registry.streamSimple(
@@ -168,7 +173,14 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
             ...(onPayload === undefined ? {} : { onPayload }),
           },
         )
-        const reply = await raceWithSignal(stream.result(), attemptSignal)
+        const result = stream.result()
+        started = true
+        // Observed before the abortable wait, so usage that arrives after an abort is still recorded
+        result.then(
+          reply => recorded?.settle(reply),
+          () => recorded?.fail(),
+        )
+        const reply = await raceWithSignal(result, attemptSignal)
         usage.input += reply.usage.input
         usage.cacheRead += reply.usage.cacheRead
         usage.output += reply.usage.output
@@ -188,6 +200,10 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
       } catch {
         if (signal.aborted) {
           return aborted()
+        }
+        // A call that never started has no result to wait for; one that did is settled by its result
+        if (!started) {
+          recorded?.fail()
         }
         if (attempt >= config.maxRetries) {
           return { ok: false, failure: attemptController.signal.aborted ? 'attempt-timeout' : failure }

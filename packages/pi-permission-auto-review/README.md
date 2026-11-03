@@ -42,7 +42,10 @@ With the `codex` preset, three denials in a row, or ten among the last fifty rev
 
 With the `codex` preset, the reviewer can also inspect local state, such as file contents or a repository's remotes, through the sandbox that you configured with pi-bring-your-own-sandbox. It needs a backend that cannot write files or reach the network; without one, the footer shows `no investigation` and the reviewer judges from the transcript alone. See [investigation][investigation].
 
+`/auto-stats` shows what automatic review decided and cost in this session and across your Pi profile, and how you answered the asks that it deferred. See [statistics][statistics].
+
 [context-edits]: docs/codex-parity.md#context-edits-and-compaction
+[statistics]: docs/status.md
 [investigation]: docs/codex-parity.md#investigation
 [provenance-trust]: docs/codex-parity.md#provenance-trust
 

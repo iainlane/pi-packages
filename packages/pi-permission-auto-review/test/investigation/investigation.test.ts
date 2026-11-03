@@ -150,11 +150,12 @@ describe('investigation', () => {
   ] as const)('classifies a refusal by exit status and the command output: %o', async ({ output, refused }) => {
     const [stdout, stderr, code] = output
     const { investigation } = setup({ sandbox: { exec: async () => processResult(stdout, stderr, code) } })
-    const { result } = await runOne(investigation, call('shell', { command: 'probe' }))
+    const { run, result } = await runOne(investigation, call('shell', { command: 'probe' }))
 
-    expect({ refused: (JSON.parse(result.text ?? '{}') as { refused?: boolean }).refused ?? false }).toStrictEqual({
-      refused,
-    })
+    expect({
+      refused: (JSON.parse(result.text ?? '{}') as { refused?: boolean }).refused ?? false,
+      counted: run.refusals,
+    }).toStrictEqual({ refused, counted: refused ? 1 : 0 })
   })
 
   it('reads the selected lines of a UTF-8 file, mapping a path in the host workspace to the target', async () => {
