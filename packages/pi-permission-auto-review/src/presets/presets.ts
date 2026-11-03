@@ -25,13 +25,16 @@ interface ReviewInput {
   contextWindow: number
 }
 
+/** A model call's failure, or evidence that the preset will not put in front of a model */
+export type ReviewFailure = CallFailure | 'provenance-uncertain'
+
 /** Logged with the decision: never the reviewer's prose, and no key naming a token or an authorization, which the log masks */
 export type ReviewFields = Record<string, string | number | boolean>
 
 export type ReviewOutcome =
   | { kind: 'allow'; fields: ReviewFields; conversation: ReviewConversation | undefined }
   | { kind: 'deny'; reason: string; fields: ReviewFields; conversation: ReviewConversation | undefined }
-  | { kind: 'failed'; failure: CallFailure; fields: ReviewFields }
+  | { kind: 'failed'; failure: ReviewFailure; fields: ReviewFields }
 
 export type DenialLimit = 'consecutive' | 'total'
 

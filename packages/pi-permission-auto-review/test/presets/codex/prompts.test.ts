@@ -4,7 +4,7 @@ import { DEFAULT_CONFIG } from '../../../src/config/config.js'
 import { buildSystemPrompt } from '../../../src/presets/codex/policy.js'
 import { buildFollowUpPrompt, buildReviewPrompt } from '../../../src/presets/codex/review-prompt.js'
 import { renderTranscript } from '../../../src/presets/codex/transcript.js'
-import { permissionDetails, shellAction } from '../../helpers.js'
+import { permissionDetails, provenanceEntry, shellAction } from '../../helpers.js'
 
 function messageEntry(id: string, message: Record<string, unknown>): SessionEntry {
   return { type: 'message', id, parentId: null, timestamp: '2026-07-23T00:00:00.000Z', message } as SessionEntry
@@ -12,6 +12,7 @@ function messageEntry(id: string, message: Record<string, unknown>): SessionEntr
 
 const BRANCH = [
   messageEntry('ask', { role: 'user', content: 'Publish the package, then push its tag.', timestamp: 0 }),
+  provenanceEntry('ask'),
   messageEntry('publish', {
     role: 'assistant',
     content: [
@@ -47,7 +48,7 @@ it('keeps the full and follow-up review prompts', async () => {
   await expect(
     buildReviewPrompt(DEFAULT_CONFIG, renderTranscript(BRANCH), DETAILS, action).userPrompt,
   ).toMatchFileSnapshot('./__snapshots__/review-prompt.txt')
-  await expect(buildFollowUpPrompt(renderTranscript(BRANCH, 2), DETAILS, action)).toMatchFileSnapshot(
+  await expect(buildFollowUpPrompt(renderTranscript(BRANCH, 3), DETAILS, action)).toMatchFileSnapshot(
     './__snapshots__/follow-up-prompt.txt',
   )
 })

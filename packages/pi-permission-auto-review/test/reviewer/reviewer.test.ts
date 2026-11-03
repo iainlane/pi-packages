@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { POLICY_REVISION } from '../../src/presets/codex/policy.js'
 import {
   createReviewerHarness,
+  provenanceEntry,
   reply,
   shellAction,
   STALLED_REPLY,
@@ -95,6 +96,29 @@ describe('permission reviewer', () => {
         errorCategory: category,
         durationMs: 0,
       },
+    })
+  })
+
+  it('defers without a model call while a user message has uncertain provenance', async () => {
+    const revocation = {
+      ...USER_ENTRY,
+      id: 'revocation',
+      message: { role: 'user', content: 'Do not publish.', timestamp: 0 },
+    }
+    const harness = createHarness({
+      entries: [
+        USER_ENTRY,
+        provenanceEntry(USER_ENTRY.id),
+        revocation,
+        provenanceEntry('revocation', 'uncertain'),
+      ] as never,
+    })
+    const { verdict, entries } = await harness.authorize()
+
+    expect({ verdict, entry: entries[0]?.[1], calls: harness.streamSimple.mock.calls.length }).toMatchObject({
+      verdict: { kind: 'defer' },
+      entry: { outcome: 'defer', errorCategory: 'provenance-uncertain', provenanceUncertain: true },
+      calls: 0,
     })
   })
 
@@ -320,7 +344,7 @@ describe('permission reviewer', () => {
     it('starts over in full once the reviewed entries leave the branch, or the conversation would not fit', async () => {
       const moved = createHarness({ replies: [reply(ALLOW), reply(ALLOW)] })
       await moved.authorize('request-1')
-      moved.branch.splice(0, 1, { ...USER_ENTRY, id: 'user-2' })
+      moved.branch.splice(0, 2, { ...USER_ENTRY, id: 'user-2' }, provenanceEntry('user-2'))
       await moved.authorize('request-2')
 
       const crowded = createHarness({ replies: [reply(ALLOW, 'stop', { totalTokens: 190_000 }), reply(ALLOW)] })

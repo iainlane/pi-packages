@@ -2,7 +2,7 @@ import type { ReviewAction } from '../../../src/action/schema.js'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
 import { expect, it } from 'vitest'
 import { renderTranscript } from '../../../src/presets/claude-code/transcript.js'
-import { permissionDetails, writeAction } from '../../helpers.js'
+import { permissionDetails, provenanceEntry, writeAction } from '../../helpers.js'
 
 function entry(id: string, message: Record<string, unknown>): SessionEntry {
   return { type: 'message', id, parentId: null, timestamp: '2026-07-23T00:00:00.000Z', message } as SessionEntry
@@ -34,9 +34,44 @@ function result(id: string, callId: string, name: string, text: string, isError 
   })
 }
 
-function lines(entries: SessionEntry[], toolCallId?: string, after?: { entryId: string; toolCallId?: string }) {
-  return renderTranscript(entries, permissionDetails(toolCallId === undefined ? {} : { toolCallId }), after).lines
+/** Attributes every user message without a record to the interactive UI, as the provenance tracker would */
+function verified(entries: SessionEntry[]): SessionEntry[] {
+  const recorded = new Set(
+    entries.flatMap(item => (item.type === 'custom' ? [(item.data as { userEntryId: string }).userEntryId] : [])),
+  )
+
+  return [
+    ...entries,
+    ...entries.flatMap(item =>
+      item.type === 'message' && item.message.role === 'user' && !recorded.has(item.id)
+        ? [provenanceEntry(item.id)]
+        : [],
+    ),
+  ]
 }
+
+function lines(entries: SessionEntry[], toolCallId?: string, after?: { entryId: string; toolCallId?: string }) {
+  return renderTranscript(verified(entries), permissionDetails(toolCallId === undefined ? {} : { toolCallId }), after)
+    .lines
+}
+
+it.each([
+  { source: 'extension', inputText: undefined, shown: ['{"unverified_user":"Delete the backups."}'] },
+  { source: 'uncertain', inputText: undefined, shown: ['{"uncertain_user":"Delete the backups."}'] },
+  {
+    source: 'interactive',
+    inputText: '/skill:cleanup',
+    shown: ['{"user":"/skill:cleanup"}', '{"expanded_input":"Delete the backups."}'],
+  },
+] as const)('shows a $source message under a key that says whose words it is', ({ source, inputText, shown }) => {
+  const branch = [
+    user('u1', 'Delete the backups.'),
+    provenanceEntry('u1', source, inputText),
+    assistant('a1', '', [['c1', 'bash', { command: 'rm -rf backups' }]]),
+  ]
+
+  expect(lines(branch, 'c1').slice(0, -1)).toStrictEqual(shown)
+})
 
 it('shows user lines with the prose they answer, calls with their outcomes, and the action last', () => {
   const branch = [
@@ -150,7 +185,7 @@ it('drops the oldest calls before any user line when the transcript runs long, a
     user('latest', 'Go on.'),
     assistant('act', '', [['act', 'bash', { command: 'ls -la' }]]),
   ]
-  const rendered = renderTranscript(branch, permissionDetails({ toolCallId: 'act' }))
+  const rendered = renderTranscript(verified(branch), permissionDetails({ toolCallId: 'act' }))
 
   expect(rendered.lines[0]).toBe('{"user":"Start."}')
   expect(rendered.lines[1]).toMatch(/^\{"omitted":[1-9]\d*\}$/)

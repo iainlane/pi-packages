@@ -1,5 +1,6 @@
 import type { SessionEvent } from '../session.js'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
+import { submittedTexts, uncertainUserEntries, verifiedUserEntries } from '../../provenance/provenance.js'
 import { approximateTokens, serializeUnknown, truncateToFit } from '../../text.js'
 import { decodeSession } from '../session.js'
 
@@ -7,7 +8,7 @@ const MAX_RECENT_UNTRUSTED_ENTRIES = 40
 const TRANSCRIPT_TOKENS = { message: 10_000, tool: 10_000 }
 const ENTRY_TOKENS = { message: 2_000, tool: 1_000 }
 
-type TranscriptKind = 'user' | 'user_interaction' | 'assistant' | 'tool'
+type TranscriptKind = 'user' | 'unverified_user' | 'user_interaction' | 'assistant' | 'tool'
 
 interface TranscriptEntry {
   index: number
@@ -24,10 +25,15 @@ interface TranscriptStats {
   directUserEntriesRetained: number
   directUserEntriesOmitted: number
   directUserEntriesTruncated: number
+  unverifiedUserEntriesRetained: number
+  unverifiedUserEntriesOmitted: number
+  unverifiedUserEntriesTruncated: number
   userInteractionEntriesRetained: number
   userInteractionEntriesOmitted: number
   userInteractionEntriesTruncated: number
   latestTrustedEntryRetained: boolean
+  /** Whether the branch has a user message that no record attributes with confidence */
+  provenanceUncertain: boolean
 }
 
 export interface RenderedTranscript {
@@ -35,11 +41,40 @@ export interface RenderedTranscript {
   stats: TranscriptStats
 }
 
-function transcriptEntries(event: SessionEvent): TranscriptEntry[] {
+interface UserProvenance {
+  verified: ReadonlySet<string>
+  submitted: ReadonlyMap<string, string>
+}
+
+function userEntries(
+  event: Extract<SessionEvent, { kind: 'user' }>,
+  entryId: string,
+  provenance: UserProvenance,
+): TranscriptEntry[] {
+  const { index, text } = event
+  if (!provenance.verified.has(entryId)) {
+    return [{ index, kind: 'unverified_user', label: 'unverified_user', text }]
+  }
+  const submitted = provenance.submitted.get(entryId)
+
+  // A skill, prompt template or input handler changed what the person typed; only their own words are authority
+  return submitted === undefined
+    ? [{ index, kind: 'user', label: 'user', text }]
+    : [
+        { index, kind: 'user', label: 'user', text: submitted },
+        { index, kind: 'unverified_user', label: 'expanded_input', text },
+      ]
+}
+
+function transcriptEntries(
+  event: SessionEvent,
+  entries: SessionEntry[],
+  provenance: UserProvenance,
+): TranscriptEntry[] {
   const { index } = event
   switch (event.kind) {
     case 'user':
-      return [{ index, kind: 'user', label: 'user', text: event.text }]
+      return userEntries(event, entries[index]?.id ?? '', provenance)
     case 'assistant':
       return [{ index, kind: 'assistant', label: 'assistant', text: event.text }]
     case 'toolCall':
@@ -90,9 +125,10 @@ function isTrusted(entry: TranscriptEntry): boolean {
  * review sees only the entries from `from` on, which still count an answer to a question asked before them
  */
 export function renderTranscript(sessionEntries: SessionEntry[], from = 0): RenderedTranscript {
+  const provenance = { verified: verifiedUserEntries(sessionEntries), submitted: submittedTexts(sessionEntries) }
   const all = decodeSession(sessionEntries)
     .filter(event => event.index >= from)
-    .flatMap(transcriptEntries)
+    .flatMap(event => transcriptEntries(event, sessionEntries, provenance))
     .map(pretruncate)
   const trusted = all.filter(isTrusted)
   const selected = new Set<TranscriptEntry>()
@@ -138,6 +174,7 @@ export function renderTranscript(sessionEntries: SessionEntry[], from = 0): Rend
   }
   const total = tally()
   const user = tally('user')
+  const unverifiedUser = tally('unverified_user')
   const interaction = tally('user_interaction')
   const latest = trusted.at(-1)
 
@@ -150,10 +187,14 @@ export function renderTranscript(sessionEntries: SessionEntry[], from = 0): Rend
       directUserEntriesRetained: user.retained,
       directUserEntriesOmitted: user.omitted,
       directUserEntriesTruncated: user.truncated,
+      unverifiedUserEntriesRetained: unverifiedUser.retained,
+      unverifiedUserEntriesOmitted: unverifiedUser.omitted,
+      unverifiedUserEntriesTruncated: unverifiedUser.truncated,
       userInteractionEntriesRetained: interaction.retained,
       userInteractionEntriesOmitted: interaction.omitted,
       userInteractionEntriesTruncated: interaction.truncated,
       latestTrustedEntryRetained: latest !== undefined && selected.has(latest),
+      provenanceUncertain: uncertainUserEntries(sessionEntries).size > 0,
     },
   }
 }

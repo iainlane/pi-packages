@@ -1,9 +1,10 @@
 import type { ActionCapture } from '../action/capture.js'
 import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig } from '../config/config.js'
-import type { ContextFile, Preset, ReviewFields, ReviewOutcome } from '../presets/presets.js'
+import type { ContextFile, Preset, ReviewFailure, ReviewFields, ReviewOutcome } from '../presets/presets.js'
+import type { UserMessageProvenance } from '../provenance/provenance.js'
 import type { ReviewConversation } from './conversation.js'
-import type { CallFailure, CallUsage } from './model-call.js'
+import type { CallUsage } from './model-call.js'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type { Authorizer, AuthorizerVerdict, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { PRESETS } from '../presets/presets.js'
@@ -12,11 +13,12 @@ import { resolveReviewModel } from './model.js'
 
 const DECISION_EVENT = 'auto_review.decision'
 
-type FailureCategory = 'provider-unresolved' | 'model-unresolved' | CallFailure
+type FailureCategory = 'provider-unresolved' | 'model-unresolved' | ReviewFailure
 
 export interface ReviewerRuntime {
   config: AutoReviewConfig
   actions: Pick<ActionCapture, 'resolve'>
+  provenance: Pick<UserMessageProvenance, 'flush'>
   /** Read at every review, since `signal` belongs to the turn in progress */
   context: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal'>
   /** The context files the user's trust covers, as of the latest run */
@@ -73,6 +75,8 @@ async function runReview(
       deadline,
       usage,
     })
+    // The last user message may still be waiting for its provenance record
+    runtime.provenance.flush(context)
     const outcome = await preset.review(
       {
         config,

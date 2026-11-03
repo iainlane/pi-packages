@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, vi } from 'vitest'
 import { inputDigest } from '../src/action/json.js'
 import { mergeConfig } from '../src/config/config.js'
+import { USER_PROVENANCE_TYPE } from '../src/provenance/provenance.js'
 import { createPermissionReviewer } from '../src/reviewer/reviewer.js'
 
 /** A throwaway project and agent dir, with `PI_CODING_AGENT_DIR` pointed at the latter */
@@ -129,6 +130,22 @@ export const USER_ENTRY: SessionEntry = {
   message: { role: 'user', content: 'Please run the requested operation.', timestamp: 0 },
 }
 
+/** The record that attributes a user message entry to `source`, as the provenance tracker writes it */
+export function provenanceEntry(
+  userEntryId: string,
+  source: 'interactive' | 'rpc' | 'extension' | 'uncertain' = 'interactive',
+  inputText?: string,
+): SessionEntry {
+  return {
+    type: 'custom',
+    id: `provenance-${userEntryId}`,
+    parentId: userEntryId,
+    timestamp: '2026-07-23T00:00:00.000Z',
+    customType: USER_PROVENANCE_TYPE,
+    data: { userEntryId, source, ...(inputText === undefined ? {} : { inputText }) },
+  }
+}
+
 export function reply(
   text: string,
   stopReason: AssistantMessage['stopReason'] = 'stop',
@@ -197,7 +214,7 @@ interface ReviewerHarnessOptions {
 export function createReviewerHarness(options: ReviewerHarnessOptions): ReviewerHarness {
   const replies = [...options.replies]
   const callTimes: number[] = []
-  const branch = [...(options.entries ?? [USER_ENTRY])]
+  const branch = [...(options.entries ?? [USER_ENTRY, provenanceEntry(USER_ENTRY.id)])]
   const streamSimple = vi.fn<StreamSimple>(() => ({
     result: async () => {
       callTimes.push(Date.now())
@@ -232,6 +249,7 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
       sessionManager: { getBranch: () => [...branch], getSessionId: () => 'session-1' },
       signal: options.turnSignal,
     } as never,
+    provenance: { flush: () => {} },
     contextFiles: () => [],
     sessionSignal: new AbortController().signal,
   })

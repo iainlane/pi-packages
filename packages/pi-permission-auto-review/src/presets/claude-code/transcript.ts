@@ -3,6 +3,7 @@ import type { TranscriptCursor } from '../../reviewer/conversation.js'
 import type { SessionEvent } from '../session.js'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
+import { submittedTexts, uncertainUserEntries, verifiedUserEntries } from '../../provenance/provenance.js'
 import { approximateTokens, serializeUnknown, truncateToFit } from '../../text.js'
 import { permissionRequest } from '../permission-request.js'
 import { decodeSession } from '../session.js'
@@ -24,6 +25,9 @@ const NOTE_KEYS: Readonly<Record<Note['label'], string>> = {
 }
 const LINE_KEYS = new Set([
   'user',
+  'unverified_user',
+  'uncertain_user',
+  'expanded_input',
   'user_answer',
   'assistant',
   'outcome',
@@ -84,6 +88,9 @@ export function renderTranscript(
   action?: ReviewAction,
 ): ClaudeCodeTranscript {
   const events = decodeSession(entries)
+  const verifiedUsers = verifiedUserEntries(entries)
+  const uncertainUsers = uncertainUserEntries(entries)
+  const submitted = submittedTexts(entries)
   const target =
     details.toolCallId === undefined
       ? undefined
@@ -127,12 +134,30 @@ export function renderTranscript(
         break
       case 'user':
         if (unseen(event)) {
+          const id = entries[event.index]?.id ?? ''
+          const typed = submitted.get(id)
+          // Created first, since a line's position follows the order of creation
+          const answered = proposal === undefined ? [] : [line('assistant', proposal, {}, LINE_CHARACTERS.other)]
+          // Only the person's own words are `user`; an expansion of them, or text from an extension, is not
+          const voice = verifiedUsers.has(id)
+            ? typed === undefined
+              ? [line('user', event.text, {}, LINE_CHARACTERS.user)]
+              : [
+                  line('user', typed, {}, LINE_CHARACTERS.user),
+                  line('expanded_input', event.text, {}, LINE_CHARACTERS.other),
+                ]
+            : [
+                line(
+                  uncertainUsers.has(id) ? 'uncertain_user' : 'unverified_user',
+                  event.text,
+                  {},
+                  LINE_CHARACTERS.user,
+                ),
+              ]
           units.push({
-            fromUser: true,
-            lines: [
-              ...(proposal === undefined ? [] : [line('assistant', proposal, {}, LINE_CHARACTERS.other)]),
-              line('user', event.text, {}, LINE_CHARACTERS.user),
-            ],
+            // An uncertain message might be the person's restriction, so it is kept like theirs
+            fromUser: verifiedUsers.has(id) || uncertainUsers.has(id),
+            lines: [...answered, ...voice],
           })
         }
         proposal = undefined

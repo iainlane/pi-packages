@@ -73,7 +73,7 @@ function expectedPrompt(request: unknown, call: ToolCall): ReviewEvidence {
     request,
     transcript: [
       { index: 3, source: 'user', label: 'user', content: 'Perform the scripted action.' },
-      { index: 4, source: 'tool', label: `tool:${call.name}`, content: JSON.stringify(call.arguments) },
+      { index: 5, source: 'tool', label: `tool:${call.name}`, content: JSON.stringify(call.arguments) },
     ],
   }
 }

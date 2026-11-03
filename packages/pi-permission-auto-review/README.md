@@ -34,6 +34,10 @@ Load this extension before `@gotgenes/pi-permission-system`. The reviewer judges
 
 An ask without a captured input defers to the next authorizer or the human prompt, and so does an ask from a forwarded subagent, whose input the parent cannot see. A write or edit to Pi's settings or to this extension's or pi-permission-system's configuration also defers, because it would change what governs the agent and this review.
 
+With the `codex` preset, only messages that the person sent from the interactive UI or over RPC count as their instructions. Messages that other extensions send, and messages in sessions recorded before this version, are shown to the reviewer as untrusted. When a skill or prompt template expanded what the person typed, their typed text counts and the expansion does not. See [provenance trust][provenance-trust] for the limits of this check.
+
+[provenance-trust]: docs/codex-parity.md#provenance-trust
+
 Add the authorizer to pi-permission-system's config, normally `~/.pi/agent/extensions/pi-permission-system/config.json`:
 
 ```json

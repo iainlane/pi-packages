@@ -31,6 +31,9 @@ export const CODEX_PRESET: Preset = {
       },
     )
     const fields = { ...transcript.stats, priorReviews }
+    if (transcript.stats.provenanceUncertain) {
+      return { kind: 'failed', failure: 'provenance-uncertain', fields }
+    }
     const result = await complete(request, parseReviewAssessment)
     if (!result.ok) {
       return { kind: 'failed', failure: result.failure, fields }

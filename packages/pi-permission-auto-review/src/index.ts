@@ -18,6 +18,7 @@ import { ActionCapture } from './action/capture.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
+import { UserMessageProvenance } from './provenance/provenance.js'
 import { createPermissionReviewer } from './reviewer/reviewer.js'
 
 const AUTHORIZER_NAME = 'auto-review'
@@ -72,6 +73,7 @@ function statusText(current: Generation, tally: Tally): string {
 
 export default function permissionAutoReview(pi: ExtensionAPI): void {
   const actions = new ActionCapture(pi)
+  const provenance = new UserMessageProvenance(pi)
   let generation: Generation | undefined
   let tally: Tally = { allow: 0, deny: 0, defer: 0 }
   // As the latest run loaded them, which is what the agent itself was told
@@ -92,6 +94,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
         : createPermissionReviewer({
             config,
             actions,
+            provenance,
             context: runtime,
             contextFiles: () => contextFiles,
             sessionSignal: controller.signal,

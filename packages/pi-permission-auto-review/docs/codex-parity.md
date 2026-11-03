@@ -50,6 +50,30 @@ process and records these facts.
   settings or into this extension's or pi-permission-system's configuration
   defers. The policy treats such a change made through a shell command as
   permission tampering.
+- The extension records in its own session entries whether each user
+  message came from the interactive UI, RPC or an extension. With the `codex`
+  preset, only a message from the interactive UI or RPC counts as the user's.
+  When a skill, prompt template or input handler changed what the person typed,
+  the typed text counts and the expansion is untrusted. A message that the
+  extension cannot attribute with confidence defers every review on its
+  branch.
+
+## Provenance trust
+
+The records are ordinary custom entries. They are not signed, and nothing
+binds them to an authenticated writer. Another installed extension, or an
+edited session file, can add a record that attributes a message to the
+interactive UI, and the reviewer accepts it. Two records that disagree make
+the message uncertain. The records constrain what the reviewer treats as the
+user's words among trusted extensions and trusted session history; they do
+not protect against a malicious installed extension. Authenticated provenance
+needs an API in Pi.
+
+Pi delivers queued input later and reports no submission identifiers. The
+extension matches a queued message to its input by content, steer before
+follow-up. It keeps the source of a transformed queued message only while no
+other input is queued, and of a transformed idle message only when one
+submission could have produced it.
 
 ## Load order
 
