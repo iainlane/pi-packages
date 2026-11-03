@@ -30,7 +30,7 @@ interface ReviewInput {
 }
 
 /** A model call's failure, or evidence that the preset will not put in front of a model */
-export type ReviewFailure = CallFailure | 'provenance-uncertain' | 'authority-edited' | 'authority-over-budget'
+export type ReviewFailure = CallFailure | 'authority-edited' | 'authority-over-budget'
 
 /** Logged with the decision: never the reviewer's prose, and no key naming a token or an authorization, which the log masks */
 export type ReviewFields = Record<string, string | number | boolean>

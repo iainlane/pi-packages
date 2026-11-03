@@ -16,9 +16,17 @@ const EMPTY_COUNTS = { retainedFull: 0, retainedTruncated: 0, omitted: 0, redact
 function manifest(sources: Record<string, Partial<typeof EMPTY_COUNTS>> = {}, imagesOmitted = 0, authorityFits = true) {
   return {
     sources: Object.fromEntries(
-      ['user', 'user_interaction', 'unverified_user', 'edited_user', 'assistant', 'tool', 'summary', 'custom'].map(
-        source => [source, { ...EMPTY_COUNTS, ...sources[source] }],
-      ),
+      [
+        'user',
+        'user_interaction',
+        'uncertain_user',
+        'unverified_user',
+        'edited_user',
+        'assistant',
+        'tool',
+        'summary',
+        'custom',
+      ].map(source => [source, { ...EMPTY_COUNTS, ...sources[source] }]),
     ),
     imagesOmitted,
     answersOmitted: 0,
@@ -482,6 +490,26 @@ describe('transcript rendering', () => {
     })
   })
 
+  it('keeps an uncertain message whole across compaction, as a possible restriction', () => {
+    const session = SessionManager.inMemory('/workspace')
+    const text = `${'a'.repeat(30_000)}Do not deploy.`
+    const user = session.appendMessage({ role: 'user', content: text, timestamp: 0 })
+    session.appendCustomEntry(USER_PROVENANCE_TYPE, { userEntryId: user, source: 'uncertain' })
+    session.appendCompaction('Summary', null, 100)
+    const rendered = render(session.getBranch(), session.buildSessionProjection())
+
+    expect({
+      records: renderedRecords(rendered).filter(record => record.index === 0),
+      manifest: rendered.manifest,
+    }).toStrictEqual({
+      records: [{ index: 0, source: 'uncertain_user', label: 'uncertain_user', content: text }],
+      manifest: {
+        ...manifest({ uncertain_user: { retainedFull: 1 }, summary: { retainedFull: 1 } }),
+        provenanceUncertain: true,
+      },
+    })
+  })
+
   it.each([
     { source: 'uncertain', provenanceUncertain: true },
     { source: 'extension', provenanceUncertain: false },
@@ -514,8 +542,13 @@ describe('transcript rendering', () => {
           { source: 'metadata', omittedEntries: 0, truncatedEntries: 0, redactedEntries: 1, imagesOmitted: 0 },
         ].map(entry => JSON.stringify(entry)),
         manifest: {
-          ...manifest({ user: { retainedFull: 1 }, unverified_user: { redacted: 1 }, summary: { retainedFull: 1 } }),
+          ...manifest({
+            user: { retainedFull: 1 },
+            [provenanceUncertain ? 'uncertain_user' : 'unverified_user']: { redacted: 1 },
+            summary: { retainedFull: 1 },
+          }),
           provenanceUncertain,
+          authorityEdited: provenanceUncertain,
         },
       },
       withoutRevocation: {

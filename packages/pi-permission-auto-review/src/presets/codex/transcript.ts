@@ -20,6 +20,7 @@ const INTERACTION_TOOLS = new Map(INTERACTION_ADAPTERS.map(adapter => [adapter.t
 export type TranscriptSource =
   | 'user'
   | 'user_interaction'
+  | 'uncertain_user'
   | 'unverified_user'
   | 'edited_user'
   | 'assistant'
@@ -27,7 +28,7 @@ export type TranscriptSource =
   | 'summary'
   | 'custom'
 
-type UserSource = Extract<TranscriptSource, 'user' | 'unverified_user' | 'edited_user'>
+type UserSource = Extract<TranscriptSource, 'user' | 'uncertain_user' | 'unverified_user' | 'edited_user'>
 
 interface TranscriptEntry {
   index: number
@@ -61,7 +62,7 @@ export interface EvidenceManifest {
   authorityFits: boolean
   /** Whether a context edit removed or replaced user evidence */
   authorityEdited: boolean
-  /** Whether the branch has a user message that no record attributes with confidence */
+  /** Whether the branch has a user message that no record attributes with confidence, shown as `uncertain_user` */
   provenanceUncertain: boolean
 }
 
@@ -111,6 +112,7 @@ function emptyManifest(): EvidenceManifest {
     sources: {
       user: source(),
       user_interaction: source(),
+      uncertain_user: source(),
       unverified_user: source(),
       edited_user: source(),
       assistant: source(),
@@ -266,9 +268,12 @@ function entriesFromMessage(
   }
 }
 
-/** User messages and interaction answers, including answers that are too large to include */
+/**
+ * User messages, interaction answers, including answers that are too large to include, and messages that might be the
+ * person's and so might restrict the action
+ */
 function isAuthority(entry: TranscriptEntry): boolean {
-  return entry.kind === 'user' || entry.kind === 'user_interaction'
+  return entry.kind === 'user' || entry.kind === 'user_interaction' || entry.kind === 'uncertain_user'
 }
 
 /** The authority that the review includes in full, and the questions that the answers respond to */
@@ -289,7 +294,8 @@ function collectEntries(
   const interactionCalls = new Map<string, string>()
   const verifiedUsers = verifiedUserEntries(sessionEntries)
   const submitted = submittedTexts(sessionEntries)
-  manifest.provenanceUncertain = uncertainUserEntries(sessionEntries).size > 0
+  const uncertainUsers = uncertainUserEntries(sessionEntries)
+  manifest.provenanceUncertain = uncertainUsers.size > 0
   const projected = new Map(projection.entries.map(entry => [entry.sourceEntry.id, entry.messages]))
   const edits = new Map(
     sessionEntries.flatMap(entry => (entry.type === 'context_edit' ? [[entry.targetId, entry] as const] : [])),
@@ -304,7 +310,7 @@ function collectEntries(
         message,
         index,
         interactionCalls,
-        verifiedUsers.has(entry.id) ? 'user' : 'unverified_user',
+        verifiedUsers.has(entry.id) ? 'user' : uncertainUsers.has(entry.id) ? 'uncertain_user' : 'unverified_user',
         submitted.get(entry.id),
       ),
     )

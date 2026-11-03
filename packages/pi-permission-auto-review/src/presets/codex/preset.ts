@@ -61,9 +61,6 @@ export const CODEX_PRESET: Preset = {
     )
     const { manifest } = transcript
     const fields = { ...manifestFields(manifest), priorReviews }
-    if (manifest.provenanceUncertain) {
-      return { kind: 'failed', failure: 'provenance-uncertain', fields }
-    }
     if (manifest.authorityEdited) {
       return { kind: 'failed', failure: 'authority-edited', fields }
     }

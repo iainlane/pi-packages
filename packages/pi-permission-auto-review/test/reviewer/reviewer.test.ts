@@ -104,7 +104,7 @@ describe('permission reviewer', () => {
     })
   })
 
-  it('defers without a model call while a user message has uncertain provenance', async () => {
+  it('reviews a branch with an uncertain message, showing it as a restriction-only record', async () => {
     const revocation = {
       ...USER_ENTRY,
       id: 'revocation',
@@ -119,15 +119,18 @@ describe('permission reviewer', () => {
       ] as never,
     })
     const { verdict, entries } = await harness.authorize()
+    const [, context] = harness.streamSimple.mock.calls[0] ?? []
 
-    expect({ verdict, entry: entries[0]?.[1] }).toMatchObject({
-      verdict: { kind: 'defer' },
-      entry: {
-        outcome: 'defer',
-        errorCategory: 'provenance-uncertain',
-        provenanceUncertain: true,
-        usage: { input: 0, output: 0 },
-      },
+    expect({
+      verdict,
+      entry: entries[0]?.[1],
+      record: String(context?.messages[0]?.content).includes(
+        '{"index":2,"source":"uncertain_user","label":"uncertain_user","content":"Do not publish."}',
+      ),
+    }).toMatchObject({
+      verdict: { kind: 'allow' },
+      entry: { outcome: 'allow', 'uncertain_user.retainedFull': 1, provenanceUncertain: true },
+      record: true,
     })
   })
 

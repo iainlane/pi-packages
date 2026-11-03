@@ -60,8 +60,10 @@ process and records these facts.
   preset, only a message from the interactive UI or RPC counts as the user's.
   When a skill, prompt template or input handler changed what the person typed,
   the typed text counts and the expansion is untrusted. A message that the
-  extension cannot attribute with confidence defers every review on its
-  branch.
+  extension cannot attribute with confidence reaches the reviewer whole as
+  `uncertain_user`. It might be the person's, so its restrictions bind, but it
+  cannot authorize anything. Compaction never removes it, and a context edit
+  that removes or replaces it defers the review, as for a verified message.
 - See [context edits and compaction](#context-edits-and-compaction) for how
   the `codex` preset builds its evidence.
 - A verdict applies only if the session still matches what the review read.
