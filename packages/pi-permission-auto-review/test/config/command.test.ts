@@ -13,7 +13,13 @@ describe('/permission-auto-review', () => {
   const workspace = useWorkspace()
 
   /** Answers the settings menu with `picks` in order, then saves; other dialogs come from `answers` by title */
-  function setup(picks: string[], answers: Record<string, string> = {}, projectTrusted = true) {
+  function setup(
+    picks: string[],
+    answers: Record<string, string> = {},
+    projectTrusted = true,
+    /** Runs before each menu answer; a returned option replaces the answer */
+    onMenu: (count: number) => string | undefined = () => undefined,
+  ) {
     let activeConfig: AutoReviewConfig | undefined = loadConfig(workspace.cwd, projectTrusted).config
     const applyConfig = vi.fn((result: LoadConfigResult) => {
       activeConfig = result.config
@@ -36,6 +42,10 @@ describe('/permission-auto-review', () => {
         return answers[title]
       }
       menus.push(options)
+      const replaced = onMenu(menus.length)
+      if (replaced !== undefined) {
+        return replaced
+      }
       const field = picks[menus.length - 1]
 
       return field === undefined ? 'Save changes' : options.find(option => option.startsWith(field))
@@ -79,6 +89,47 @@ describe('/permission-auto-review', () => {
     expect(harness.applyConfig).toHaveBeenCalledOnce()
     expect(harness.activeConfig()).toMatchObject({ provider: 'review-proxy' })
     expect(harness.reload).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    {
+      description: 'saves at once when an edit elsewhere changed other fields',
+      other: { model: 'edited elsewhere' },
+      errors: [],
+      stored: { model: 'edited elsewhere', reasoning: 'high' },
+    },
+    {
+      description: 'keeps the chosen value on the second save when an edit elsewhere changed the same field',
+      other: { model: 'edited elsewhere', reasoning: 'low' },
+      errors: [
+        'changed while it was being edited, and the other edit also changed reasoning. Save again to keep your values.',
+      ],
+      stored: { model: 'edited elsewhere', reasoning: 'high' },
+    },
+  ])('$description', async ({ other, errors, stored: expected }) => {
+    const global = configPath(workspace.cwd, 'global')
+    writeFile(global, { model: 'first' })
+    const harness = setup(
+      ['Reasoning:'],
+      { 'Select configuration scope': 'Global configuration', 'Configure Reasoning': 'high' },
+      true,
+      count => {
+        if (count === 2) {
+          writeFile(global, other)
+        }
+
+        return count > 4 ? 'Cancel' : undefined
+      },
+    )
+    await harness.run('')
+
+    expect({
+      errors: harness.notify.mock.calls.filter(([, level]) => level === 'error'),
+      stored: stored('global'),
+    }).toStrictEqual({
+      errors: errors.map(error => [`Config at '${global}' ${error}`, 'error']),
+      stored: { $schema: expect.any(String) as unknown, ...expected },
+    })
   })
 
   it('drops an override that is set back to the inherited value', async () => {

@@ -314,7 +314,7 @@ async function openSettingsMenu(ctx: ExtensionCommandContext, controller: AutoRe
     return
   }
 
-  const selected = readScope(ctx.cwd, scope)
+  let selected = readScope(ctx.cwd, scope)
   const other = readActiveScope(ctx.cwd, scope === 'global' ? 'project' : 'global', projectTrusted)
   const cannotEdit = (snapshot: { path: string; issue: string }): void => {
     ctx.ui.notify(
@@ -351,6 +351,10 @@ async function openSettingsMenu(ctx: ExtensionCommandContext, controller: AutoRe
       const saved = saveScope(selected, draft, projectTrusted)
       if (!saved.ok) {
         ctx.ui.notify(saved.message, 'error')
+        if (saved.rebased !== undefined) {
+          selected = saved.rebased.snapshot
+          draft = saved.rebased.draft
+        }
         continue
       }
       notifyActivation(ctx, controller.applyConfig(saved.loadResult), {
