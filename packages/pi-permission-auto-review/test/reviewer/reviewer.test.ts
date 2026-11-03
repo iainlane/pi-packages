@@ -88,6 +88,20 @@ describe('permission reviewer', () => {
     },
   )
 
+  it('logs cache writes, and the one-hour writes among them, with the usage', async () => {
+    const { entries } = await createHarness({
+      replies: [reply(ALLOW, 'stop', { cacheWrite: 20, cacheWrite1h: 5 })],
+    }).authorize()
+
+    expect(entries[0]?.[1]?.['usage']).toStrictEqual({
+      input: 100,
+      cacheRead: 40,
+      cacheWrite: 20,
+      cacheWrite1h: 5,
+      output: 10,
+    })
+  })
+
   it('returns a denial that teaches and forbids workarounds, without writing the rationale to the log', async () => {
     const { verdict, entries } = await createHarness({ replies: [reply(DENY)] }).authorize()
 

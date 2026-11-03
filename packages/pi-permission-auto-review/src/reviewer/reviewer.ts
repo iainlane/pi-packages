@@ -171,7 +171,7 @@ async function runReview(
       return { kind: 'failed', failure: resolved.category }
     }
     const model = resolved.value
-    const usage = { input: 0, cacheRead: 0, output: 0 }
+    const usage = { input: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, output: 0 }
     const { statistics } = runtime
     const calls = statistics === undefined ? undefined : new CallLog(late => statistics.late(late), resolved.derived)
     const investigation =

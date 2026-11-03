@@ -56,7 +56,8 @@ export type CallFailure =
   | 'timeout'
   | 'cancelled'
 
-export type CallUsage = Pick<Usage, 'input' | 'cacheRead' | 'output'>
+/** `cacheWrite1h` is the part of `cacheWrite` that the provider keeps for an hour */
+export type CallUsage = Pick<Usage, 'input' | 'cacheRead' | 'cacheWrite' | 'output'> & { cacheWrite1h: number }
 
 export interface ModelRequest {
   systemPrompt: string
@@ -223,6 +224,8 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
         const reply = await raceWithSignal(result, attemptSignal)
         usage.input += reply.usage.input
         usage.cacheRead += reply.usage.cacheRead
+        usage.cacheWrite += reply.usage.cacheWrite
+        usage.cacheWrite1h += reply.usage.cacheWrite1h ?? 0
         usage.output += reply.usage.output
         if (reply.stopReason === 'error' && !isTransient(reply)) {
           return { ok: false, failure: 'provider-error' }
