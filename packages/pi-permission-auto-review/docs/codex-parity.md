@@ -236,5 +236,36 @@ check. Closing the gap needs a change in Pi.
 
 ## Departures from Codex
 
+- Codex classifies accepted input inside the host and has no restriction-only
+  category. Pi reports the source of a message only on the `input` event, so
+  this extension reconstructs provenance from Pi's events, and a message whose
+  origin stays uncertain reaches the reviewer as `uncertain_user` instead of
+  stopping automatic review.
+- Codex treats answers to its own question prompts as user evidence. Pi has no
+  built-in question tool, so the extension recognises the results of specific
+  interaction tools. See [interaction answers](#interaction-answers).
 - Forwarded subagent asks go to the human, because the parent cannot see the
   child's action.
+- Codex derives the reviewer's sandbox from the parent session's permission
+  profile. Pi has no permission profile, so investigation asks the configured
+  BYOS provider for a fixed read-only policy without network access, and has
+  no tools when the provider cannot meet it.
+- The denial count starts again when an agent run starts or settles, because
+  Pi starts a turn before every model response.
+- Evidence is text only. When an image would be needed to establish authority
+  or to judge an action, the ask needs a human decision.
+
+## Gaps that need changes in Pi
+
+- Pi executes the input object that the `tool_call` handlers saw, and a handler
+  that loads after pi-permission-system can still change it. Binding an
+  approval to the executed input needs a final check before execution, or an
+  input that later handlers cannot change.
+- A forwarded ask contains only the child's display payload and requester. The
+  parent needs the child's action and context to review it.
+- Provenance records are ordinary custom entries. Authenticated provenance and
+  submission receipts would remove the ambiguity between input events,
+  transformations and recorded messages.
+- An approval given in one session does not carry over to a session that a
+  handoff starts. Supporting that needs an authenticated receipt; ancestry that
+  the caller supplies and copied text are not enough.
