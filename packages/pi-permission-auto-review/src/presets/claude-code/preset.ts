@@ -21,6 +21,7 @@ export const CLAUDE_CODE_PRESET: Preset = {
   policyRevision: POLICY_REVISION,
   builtInRules: BUILT_IN_RULES,
   createLimiter: () => new DenialCounter(),
+  investigates: false,
   async review(input, complete) {
     const { config, branch, details, contextFiles, action } = input
     const systemPrompt = buildSystemPrompt(config.autoMode, contextFiles)
@@ -39,7 +40,14 @@ export const CLAUDE_CODE_PRESET: Preset = {
       return { kind: 'failed', failure: fast.failure, fields }
     }
     const conversationAfter = (request: ModelRequest, lastReply: AssistantMessage): ReviewConversation | undefined =>
-      nextConversation(config, { priorReviews, request, firstReply: fast.reply, lastReply, cursor: transcript.cursor })
+      nextConversation(config, {
+        priorReviews,
+        request,
+        firstReply: fast.reply,
+        lastReply,
+        cursor: transcript.cursor,
+        investigation: input.investigation,
+      })
     if (fast.value === 'allow') {
       return {
         kind: 'allow',

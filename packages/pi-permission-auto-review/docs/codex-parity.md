@@ -10,7 +10,7 @@ an authorizer, and where the preset departs from Codex because of that.
 | Component     | Revision                                                                            |
 | ------------- | ----------------------------------------------------------------------------------- |
 | Codex release | [`rust-v0.166.0`][codex-release], commit `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856` |
-| Pi            | `@earendil-works/pi-coding-agent` 1.4.0                                             |
+| Pi            | `@earendil-works/pi-coding-agent` 1.5.0                                             |
 | Permissions   | `@gotgenes/pi-permission-system` 42.0.0                                             |
 
 The reference is the synchronous reviewer: the
@@ -19,6 +19,11 @@ default in that release. The asynchronous Guardian scorers and the history tools
 behind development feature flags are out of scope.
 
 [codex-release]: https://github.com/openai/codex/tree/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/ext/guardian-reviewer
+
+The sandbox SDK is pinned to [BYOS `4f7a56b`][byos]. Load a provider extension
+separately; the SDK dependency does not activate a provider.
+
+[byos]: https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tree/4f7a56b0c3db3a7ec94553d83b125d5f59517e39/packages/sdk
 
 ## What the host gives an authorizer
 
@@ -124,6 +129,44 @@ handlers before it records a message, and a handler can consume a submission
 without recording anything. A queued or intercepted restriction can therefore
 arrive too late to stop the action under review; Pi's cancellation control
 interrupts the run.
+
+## Investigation
+
+Codex's reviewer can run read-only commands in a managed sandbox to check local
+facts, such as whether a file exists or where a repository's remote points.
+Pi has no sandbox of its own, so the `codex` preset uses the sandbox that the
+person configured through `pi-bring-your-own-sandbox`. At each session
+start, the extension asks the configured provider whether it can open a backend
+that cannot write to the workspace, cannot reach the network, sees nothing
+outside the workspace, runs POSIX `sh` commands with a guaranteed exit status,
+stops a command's whole process group on cancellation, and reads files. The
+provider extension activates itself with `registerSandboxProvider` and supplies
+its configuration and base policy through the `configure` callback. The SDK
+resolves that configuration once per runtime generation. The reviewer only
+tightens the base policy: a provider whose default backends may write still
+gives the reviewer a read-only one, if it supports that policy.
+
+When no provider can meet these requirements, including the default host
+passthrough, the reviewer has no tools, as Codex's reviewer has none without a
+managed sandbox. The footer shows `no investigation` with the reason, and the
+reason is also logged.
+The sandbox opens at the first tool call of the session and is shared by later
+reviews.
+
+The reviewer has two tools. `shell` runs one command in the workspace root with
+a 10-second limit and 32 KiB of output. `read` reads a UTF-8 text file of up to
+8 MiB, selecting lines before it truncates the output at 32 KiB; a path inside
+the host workspace is mapped to the sandbox's workspace. A review can make
+eight calls and receive 64 KiB of command output or file content. Once it
+reaches either limit, or the sandbox fails, the next request tells the model to
+answer without tools. As in Codex, a command counts as refused only when it
+fails and its own output reports a denial.
+
+A follow-up review continues the conversation of a review that called tools:
+its request repeats the tool calls and their results and offers the tools
+again. As in Codex, which starts a new reviewer session when its tools change,
+the conversation starts over when investigation becomes available or
+unavailable.
 
 ## Interaction answers
 

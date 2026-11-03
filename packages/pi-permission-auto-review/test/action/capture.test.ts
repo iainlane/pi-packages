@@ -290,6 +290,7 @@ describe('writes to configuration that governs the agent or this review', () => 
     '<agent>/extensions/pi-permission-system/config.json',
     '<cwd>/.pi/settings.json',
     '<agent>/settings.json',
+    '<agent>/byos.json',
   ])('defers a write or edit to %s', path => {
     const h = harness(workspace.cwd)
     const resolved = ['write', 'edit'].map(toolName =>

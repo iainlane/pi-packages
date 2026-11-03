@@ -16,14 +16,18 @@ export const CODEX_PRESET: Preset = {
   policyRevision: POLICY_REVISION,
   builtInRules: BUILT_IN_RULES,
   createLimiter: () => new DenialCircuitBreaker(),
+  investigates: true,
   async review(input, complete) {
     const { config, branch, projection, details, action, contextWindow } = input
-    const systemPrompt = buildSystemPrompt(config)
+    const systemPrompt = buildSystemPrompt(config, input.investigation)
     // The earlier reviews saw text that a later context edit or compaction may have removed
     const cursorIndex =
       input.conversation === undefined ? -1 : branch.findIndex(entry => entry.id === input.conversation?.cursor.entryId)
+    // Like Codex, which starts a new reviewer session when its tools change. Providers also reject a history with tool
+    // calls unless the request defines the tools
+    const sameTools = input.conversation?.investigation === input.investigation
     const conversation =
-      input.conversation !== undefined && cursorIndex >= 0 && !evidenceChangedSince(branch, cursorIndex)
+      input.conversation !== undefined && cursorIndex >= 0 && !evidenceChangedSince(branch, cursorIndex) && sameTools
         ? input.conversation
         : undefined
     const { request, transcript, priorReviews } = prepareReview(
@@ -75,10 +79,11 @@ export const CODEX_PRESET: Preset = {
     const lastEntry = branch.at(-1)
     const next = nextConversation(config, {
       priorReviews,
-      request,
+      request: result.request,
       firstReply: result.reply,
       lastReply: result.reply,
       cursor: lastEntry === undefined ? undefined : { entryId: lastEntry.id },
+      investigation: input.investigation,
     })
     // Under a key naming an authorization, the review log would mask the grade
     const graded = { ...fields, riskLevel: assessment.riskLevel, userApproval: assessment.userAuthorization }

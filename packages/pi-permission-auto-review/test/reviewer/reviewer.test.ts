@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { POLICY_REVISION } from '../../src/presets/codex/policy.js'
 import {
   createReviewerHarness,
+  fakeInvestigation,
+  investigationReply,
   provenanceEntry,
   reply,
   shellAction,
@@ -446,6 +448,153 @@ describe('permission reviewer', () => {
       expect(entries[0]?.[1]).toMatchObject({ errorCategory: 'cancelled', durationMs: 100 })
       expect(harness.streamSimple).toHaveBeenCalledOnce()
       expect(vi.getTimerCount()).toBe(0)
+    })
+  })
+
+  describe('investigation', () => {
+    const toolNames = (harness: ReturnType<typeof createHarness>): (string[] | undefined)[] =>
+      harness.streamSimple.mock.calls.map(([, context]) =>
+        (context as { tools?: { name: string }[] }).tools?.map(tool => tool.name),
+      )
+    const toolChoices = (harness: ReturnType<typeof createHarness>): unknown[] =>
+      harness.streamSimple.mock.calls.map(([, , options]) => (options as { toolChoice?: string }).toolChoice)
+
+    it('lets the codex reviewer inspect local state in the sandbox before it decides', async () => {
+      const harness = createHarness({
+        investigation: fakeInvestigation({ stdout: 'origin git@example.com:private/repo.git\n' }),
+        replies: [investigationReply('shell', { command: 'git remote -v' }), reply(ALLOW)],
+      })
+      const { verdict, entries } = await harness.authorize()
+      const [, first] = harness.streamSimple.mock.calls[0] ?? []
+      const [, second] = harness.streamSimple.mock.calls[1] ?? []
+
+      expect({
+        verdict,
+        tools: toolNames(harness),
+        guidelines: first?.systemPrompt.includes('Only call tools when they would flip an allow/deny decision'),
+        exchange: second?.messages.slice(1).map(message => message.role),
+        result: JSON.stringify(second?.messages[2]),
+        fields: [entries[0]?.[1]?.['investigationCalls'], entries[0]?.[1]?.['investigationBytes']],
+      }).toStrictEqual({
+        verdict: { kind: 'allow' },
+        tools: [
+          ['shell', 'read'],
+          ['shell', 'read'],
+        ],
+        guidelines: true,
+        exchange: ['assistant', 'toolResult'],
+        result: expect.stringContaining('private/repo.git') as unknown,
+        fields: [1, 40],
+      })
+    })
+
+    it('asks for the verdict without further calls once the budget is exhausted', async () => {
+      const calls = Array.from({ length: 8 }, (_, index) =>
+        investigationReply('shell', { command: `echo ${index}` }, `call-${index}`),
+      )
+      const harness = createHarness({
+        investigation: fakeInvestigation({ stdout: 'ok' }),
+        replies: [...calls, reply(DENY)],
+      })
+      const { verdict } = await harness.authorize()
+
+      expect({ verdict: verdict.kind, choices: toolChoices(harness) }).toStrictEqual({
+        verdict: 'deny',
+        choices: [...Array.from({ length: 8 }).fill(undefined), 'none'],
+      })
+    })
+
+    it('defers when the reviewer still calls a tool after the budget is exhausted', async () => {
+      const calls = Array.from({ length: 9 }, (_, index) =>
+        investigationReply('shell', { command: `echo ${index}` }, `call-${index}`),
+      )
+      const harness = createHarness({
+        config: { maxRetries: 0 },
+        investigation: fakeInvestigation({ stdout: 'ok' }),
+        replies: calls,
+      })
+      const { verdict, entries } = await harness.authorize()
+
+      expect({ verdict, category: entries[0]?.[1]?.['errorCategory'] }).toStrictEqual({
+        verdict: { kind: 'defer' },
+        category: 'invalid-response',
+      })
+    })
+
+    it.each([
+      { description: 'no sandbox can meet the requirements', preset: 'codex', sandbox: 'unavailable' },
+      { description: 'the preset is claude-code', preset: 'claude-code', sandbox: { stdout: 'ok' } },
+    ] as const)('offers no tools when $description', async ({ preset, sandbox }) => {
+      const harness = createHarness({
+        config: { preset },
+        investigation: fakeInvestigation(sandbox),
+        replies: preset === 'codex' ? [reply(ALLOW)] : [reply('<block>no</block>')],
+      })
+      await harness.authorize()
+
+      expect(toolNames(harness)).toStrictEqual([undefined])
+    })
+
+    it('continues the conversation after a review that investigated, offering the tools again', async () => {
+      const harness = createHarness({
+        config: { followUpReviews: 'always' },
+        investigation: fakeInvestigation({ stdout: 'ok' }),
+        replies: [investigationReply('shell', { command: 'ls' }), reply(ALLOW), reply(ALLOW)],
+      })
+      await harness.authorize('request-1')
+      await harness.authorize('request-2')
+
+      expect({
+        roles: harness.streamSimple.mock.calls.map(([, context]) => context.messages.map(message => message.role)),
+        tools: toolNames(harness),
+      }).toStrictEqual({
+        roles: [
+          ['user'],
+          ['user', 'assistant', 'toolResult'],
+          ['user', 'assistant', 'toolResult', 'assistant', 'user'],
+        ],
+        tools: [
+          ['shell', 'read'],
+          ['shell', 'read'],
+          ['shell', 'read'],
+        ],
+      })
+    })
+
+    it.each([
+      {
+        description: 'the tools are withdrawn after a review that used them',
+        before: true,
+        replies: [investigationReply('shell', { command: 'ls' }), reply(ALLOW), reply(ALLOW)],
+        roles: [['user'], ['user', 'assistant', 'toolResult'], ['user']],
+        tools: [['shell', 'read'], ['shell', 'read'], undefined],
+      },
+      {
+        description: 'the tools become available after a review without them',
+        before: false,
+        replies: [reply(ALLOW), reply(ALLOW)],
+        roles: [['user'], ['user']],
+        tools: [undefined, ['shell', 'read']],
+      },
+    ])('starts over when $description', async ({ before, replies, roles, tools }) => {
+      const sandbox = fakeInvestigation({ stdout: 'ok' })
+      let available = before
+      const harness = createHarness({
+        config: { followUpReviews: 'always' },
+        investigation: {
+          availability: async () => (available ? sandbox.availability() : { available: false, reason: 'gone' }),
+          forReview: signal => sandbox.forReview(signal),
+        },
+        replies,
+      })
+      await harness.authorize('request-1')
+      available = !before
+      await harness.authorize('request-2')
+
+      expect({
+        roles: harness.streamSimple.mock.calls.map(([, context]) => context.messages.map(message => message.role)),
+        tools: toolNames(harness),
+      }).toStrictEqual({ roles, tools })
     })
   })
 

@@ -4,7 +4,12 @@ import { defineConfig } from 'tsdown'
 const config: UserConfig = defineConfig({
   clean: true,
   deps: {
-    neverBundle: ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@gotgenes/pi-permission-system'],
+    neverBundle: [
+      '@earendil-works/pi-ai',
+      '@earendil-works/pi-coding-agent',
+      '@gotgenes/pi-permission-system',
+      'pi-bring-your-own-sandbox',
+    ],
     onlyBundle: ['valibot'],
   },
   dts: true,

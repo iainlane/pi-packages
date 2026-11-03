@@ -17,6 +17,7 @@ import { buildSessionProjection } from '@earendil-works/pi-coding-agent'
 import { afterEach, beforeEach, vi } from 'vitest'
 import { inputDigest } from '../src/action/json.js'
 import { mergeConfig } from '../src/config/config.js'
+import { Investigation } from '../src/investigation/investigation.js'
 import { USER_PROVENANCE_TYPE } from '../src/provenance/provenance.js'
 import { createPermissionReviewer } from '../src/reviewer/reviewer.js'
 
@@ -160,6 +161,46 @@ export function reply(
   } as AssistantMessage
 }
 
+/** A reviewer reply that calls one investigation tool */
+export function investigationReply(
+  name: string,
+  args: Record<string, string | number>,
+  id = `investigate-${name}`,
+): AssistantMessage {
+  return {
+    ...reply(''),
+    content: [{ type: 'toolCall', id, name, arguments: args }],
+    stopReason: 'toolUse',
+  }
+}
+
+/** A session investigation whose sandbox answers every shell command with `stdout`, or which none can serve */
+export function fakeInvestigation(sandbox: { stdout: string } | 'unavailable'): Investigation {
+  const investigation = new Investigation({} as never, {
+    negotiateSandbox: async () =>
+      sandbox === 'unavailable'
+        ? ({ ok: false, error: { name: 'UnsupportedSandboxPolicyError', message: 'network access' } } as never)
+        : {
+            ok: true,
+            policy: { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' },
+          },
+    getSandbox: async () =>
+      ({
+        workspace: { root: '/workspace', pathFlavor: 'posix' },
+        exec: async () => ({
+          exit: { kind: 'code', code: 0 },
+          stdout: new TextEncoder().encode(sandbox === 'unavailable' ? '' : sandbox.stdout),
+          stderr: new Uint8Array(),
+          omittedBytes: { stdout: 0, stderr: 0 },
+          durationMs: 1,
+        }),
+      }) as never,
+  })
+  investigation.start({ cwd: '/workspace', sessionManager: {} } as never)
+
+  return investigation
+}
+
 export function toolCallEntry(input: Record<string, unknown>, callId = 'call-1'): SessionEntry {
   return {
     type: 'message',
@@ -219,6 +260,7 @@ interface ReviewerHarnessOptions {
   thinkingLevelMap?: ThinkingLevelMap
   /** Whether the session has a UI to show warnings in; true by default */
   hasUI?: boolean
+  investigation?: Pick<Investigation, 'availability' | 'forReview'>
   /** What the action capture answers for each ask; by default the bash command that the ask names */
   resolve?: (details: PromptPermissionDetails) => ActionResolution
 }
@@ -278,6 +320,7 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
     provenance: { flush: () => {} },
     contextFiles: () => [],
     sessionSignal: new AbortController().signal,
+    ...(options.investigation === undefined ? {} : { investigation: options.investigation }),
   })
 
   const start: ReviewStart = (requestId = 'request-1', details = {}) => {

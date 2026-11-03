@@ -40,7 +40,10 @@ The `codex` preset shows the reviewer every user message in full, including ones
 
 With the `codex` preset, three denials in a row, or ten among the last fifty reviews, stop the agent, as in Codex: the ask that reaches the limit is denied with its review's reason, the extension shows a warning and interrupts the turn, and any further ask before the run ends is refused without review. The count starts again with the next agent run. The `claude-code` preset instead hands the ask that reaches its limit to the human prompt.
 
+With the `codex` preset, the reviewer can also inspect local state, such as file contents or a repository's remotes, through the sandbox that you configured with pi-bring-your-own-sandbox. It needs a backend that cannot write files or reach the network; without one, the footer shows `no investigation` and the reviewer judges from the transcript alone. See [investigation][investigation].
+
 [context-edits]: docs/codex-parity.md#context-edits-and-compaction
+[investigation]: docs/codex-parity.md#investigation
 [provenance-trust]: docs/codex-parity.md#provenance-trust
 
 Add the authorizer to pi-permission-system's config, normally `~/.pi/agent/extensions/pi-permission-system/config.json`:

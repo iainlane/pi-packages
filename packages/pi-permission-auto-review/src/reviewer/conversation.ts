@@ -22,6 +22,8 @@ export interface ReviewConversation {
   cursor: TranscriptCursor
   tokens: number
   reviews: number
+  /** Whether its reviews were offered investigation tools */
+  investigation: boolean
 }
 
 /** What a follow-up renders after: the conversation's cursor, whose entry sits at `entryIndex` in the branch */
@@ -43,6 +45,7 @@ interface FinishedReview {
   firstReply: AssistantMessage
   lastReply: AssistantMessage
   cursor: TranscriptCursor | undefined
+  investigation: boolean
 }
 
 export function userMessage(content: string): Message {
@@ -102,5 +105,6 @@ export function nextConversation(config: AutoReviewConfig, review: FinishedRevie
       calculateContextTokens(review.lastReply.usage) ||
       review.request.tokens + approximateTokens(replyText(review.lastReply)),
     reviews: review.priorReviews + 1,
+    investigation: review.investigation,
   }
 }

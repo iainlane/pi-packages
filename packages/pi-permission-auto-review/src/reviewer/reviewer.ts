@@ -1,5 +1,6 @@
 import type { ActionCapture } from '../action/capture.js'
 import type { AutoReviewConfig } from '../config/config.js'
+import type { Investigation, InvestigationRun } from '../investigation/investigation.js'
 import type { ContextFile, Preset, ReviewFailure, ReviewFields, ReviewOutcome } from '../presets/presets.js'
 import type { UserMessageProvenance } from '../provenance/provenance.js'
 import type { ReviewConversation } from './conversation.js'
@@ -34,6 +35,8 @@ export interface ReviewerRuntime {
   contextFiles: () => readonly ContextFile[]
   /** Aborted when the reviewer is replaced, the session ends or the session moves to other history; read at every review */
   sessionSignal: AbortSignal
+  /** The session's sandbox for inspecting local state, for presets that investigate */
+  investigation?: Pick<Investigation, 'availability' | 'forReview'>
 }
 
 export interface PermissionReviewer {
@@ -59,7 +62,7 @@ async function reviewCurrentEvidence(
   preset: Preset,
   details: PromptPermissionDetails,
   conversation: ReviewConversation | undefined,
-  options: { complete: ModelCall; contextWindow: number },
+  options: { complete: ModelCall; contextWindow: number; investigation: boolean },
 ): Promise<AttemptResult> {
   const { config, context } = runtime
   let continued = conversation
@@ -80,6 +83,7 @@ async function reviewCurrentEvidence(
         contextFiles: runtime.contextFiles(),
         conversation: continued,
         contextWindow: options.contextWindow,
+        investigation: options.investigation,
       },
       options.complete,
     )
@@ -102,6 +106,16 @@ async function reviewCurrentEvidence(
     // The conversation so far judged evidence that no longer stands
     continued = undefined
   }
+}
+
+/** The tools for this review, when the session's sandbox meets the requirements */
+async function startInvestigation(
+  investigation: NonNullable<ReviewerRuntime['investigation']>,
+  signal: AbortSignal,
+): Promise<InvestigationRun | undefined> {
+  const availability = await investigation.availability()
+
+  return availability.available ? investigation.forReview(signal) : undefined
 }
 
 async function runReview(
@@ -131,6 +145,10 @@ async function runReview(
     }
     const model = resolved.value
     const usage = { input: 0, cacheRead: 0, output: 0 }
+    const investigation =
+      preset.investigates && runtime.investigation !== undefined
+        ? await startInvestigation(runtime.investigation, signal)
+        : undefined
     const complete = createModelCall({
       registry: context.modelRegistry,
       model,
@@ -140,13 +158,19 @@ async function runReview(
       timeoutSignal: timeoutController.signal,
       deadline,
       usage,
+      investigation,
     })
     const outcome = await reviewCurrentEvidence(runtime, preset, details, conversation, {
       complete,
       contextWindow: model.contextWindow,
+      investigation: investigation !== undefined,
     })
+    const investigated =
+      investigation === undefined || investigation.calls === 0
+        ? {}
+        : { investigationCalls: investigation.calls, investigationBytes: investigation.bytes }
 
-    return { ...outcome, usage }
+    return { ...outcome, fields: { ...outcome.fields, ...investigated }, usage }
   } finally {
     clearTimeout(timeout)
   }

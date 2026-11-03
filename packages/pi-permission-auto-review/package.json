@@ -63,22 +63,30 @@
     "sync:claude-code-policy": "node --experimental-strip-types scripts/sync-claude-code-policy.ts",
     "prepack": "pnpm run build"
   },
+  "dependencies": {
+    "pi-bring-your-own-sandbox": "github:underwhelmingperformance/pi-bring-your-own-sandbox#4f7a56b0c3db3a7ec94553d83b125d5f59517e39&path:/packages/sdk"
+  },
   "devDependencies": {
-    "@earendil-works/pi-ai": "catalog:",
-    "@earendil-works/pi-coding-agent": "catalog:",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@gotgenes/pi-permission-system": "42.0.0",
     "@types/node": "catalog:",
     "@valibot/to-json-schema": "catalog:",
     "tsdown": "catalog:",
+    "typebox": "catalog:",
     "typescript": "catalog:",
     "valibot": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "catalog:pi-peer",
-    "@earendil-works/pi-coding-agent": "catalog:pi-peer",
-    "@gotgenes/pi-permission-system": "^37.0.0 || ^38.0.0 || ^39.0.0 || ^40.0.0 || ^41.0.0 || ^42.0.0"
+    "@earendil-works/pi-ai": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@gotgenes/pi-permission-system": "^37.0.0 || ^38.0.0 || ^39.0.0 || ^40.0.0 || ^41.0.0 || ^42.0.0",
+    "typebox": "catalog:pi-peer"
   },
+  "bundleDependencies": [
+    "pi-bring-your-own-sandbox"
+  ],
   "engines": {
     "node": ">=24"
   },

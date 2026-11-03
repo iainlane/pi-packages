@@ -1,9 +1,8 @@
-import type { FauxProviderRegistration } from '@earendil-works/pi-ai'
+import type { FauxProviderHandle } from '@earendil-works/pi-ai'
 import type { AgentSession, ExtensionAPI, ExtensionFactory, InputEvent } from '@earendil-works/pi-coding-agent'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { fauxAssistantMessage, fauxText } from '@earendil-works/pi-ai'
-import { registerFauxProvider } from '@earendil-works/pi-ai/compat'
+import { fauxAssistantMessage, fauxProvider, fauxText } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
   createSyntheticSourceInfo,
@@ -90,7 +89,6 @@ function harness(manager = SessionManager.inMemory('/workspace')) {
 describe('user message provenance', () => {
   const workspace = useWorkspace()
   const sessions: AgentSession[] = []
-  const providers: FauxProviderRegistration[] = []
   const initialContent = JSON.stringify([{ type: 'text', text: 'Start' }])
   const approvalContent = JSON.stringify([{ type: 'text', text: 'Deploy the application' }])
 
@@ -99,24 +97,20 @@ describe('user message provenance', () => {
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
       session.dispose()
     }
-    for (const provider of providers.splice(0)) {
-      provider.unregister()
-    }
   })
 
   async function host(
     install: (
       pi: ExtensionAPI,
       getSession: () => AgentSession,
-      provider: FauxProviderRegistration,
+      provider: FauxProviderHandle,
       getProvenance: () => UserMessageProvenance,
     ) => void,
     position: 'before' | 'after' = 'after',
     options: { prompt?: string; template?: string } = {},
   ): Promise<AgentSession> {
     mkdirSync(workspace.cwd, { recursive: true })
-    const provider = registerFauxProvider({ provider: 'provenance-test', models: [{ id: 'agent' }] })
-    providers.push(provider)
+    const provider = fauxProvider({ provider: 'provenance-test', models: [{ id: 'agent' }] })
     provider.setResponses([
       fauxAssistantMessage(fauxText('Done.')),
       fauxAssistantMessage(fauxText('Done.')),
@@ -174,11 +168,7 @@ describe('user message provenance', () => {
       allowModelNetwork: false,
       refreshOnCreate: false,
     })
-    modelRuntime.registerProvider(provider.getModel().provider, {
-      api: provider.api,
-      apiKey: 'faux-test-key',
-      models: provider.models,
-    })
+    modelRuntime.registerNativeProvider(provider.provider)
     const result = await createAgentSession({
       cwd: workspace.cwd,
       agentDir: workspace.cwd,
@@ -356,10 +346,17 @@ describe('user message provenance', () => {
   })
 
   it('does not promote nested extension input in the Pi host', async () => {
+    const { promise: nestedSettled, resolve: markNestedSettled } = Promise.withResolvers<void>()
     const session = await host(pi => {
+      pi.on('agent_settled', () => markNestedSettled())
       pi.on('input', event => {
         if (event.source === 'interactive') {
           pi.sendUserMessage('Extension request')
+        }
+      })
+      pi.on('before_agent_start', async event => {
+        if (event.messageType === 'user' && event.prompt === 'Start') {
+          await nestedSettled
         }
       })
     }, 'before')

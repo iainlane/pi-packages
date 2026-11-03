@@ -25,6 +25,8 @@ interface ReviewInput {
   /** The conversation a follow-up review continues, if one is open */
   conversation: ReviewConversation | undefined
   contextWindow: number
+  /** Whether the model call offers investigation tools */
+  investigation: boolean
 }
 
 /** A model call's failure, or evidence that the preset will not put in front of a model */
@@ -56,6 +58,8 @@ export interface Preset {
   /** What `DEFAULTS_ENTRY` stands for in each rule list */
   builtInRules: Readonly<Record<RuleListName, readonly string[]>>
   createLimiter: () => DenialLimiter
+  /** Whether the reviewer may inspect local state through a sandbox */
+  investigates: boolean
   review: (input: ReviewInput, complete: ModelCall) => Promise<ReviewOutcome>
 }
 

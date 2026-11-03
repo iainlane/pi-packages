@@ -14,11 +14,22 @@ import {
   publishPermissionsService,
   unpublishPermissionsService,
 } from '@gotgenes/pi-permission-system'
+import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/api'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EXTENSION_ID } from '../src/config/config.js'
 import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
 import { permissionDetails, useWorkspace, writeFile } from './helpers.js'
+
+const sandbox = vi.hoisted(() => ({ negotiation: undefined as unknown }))
+vi.mock('pi-bring-your-own-sandbox/api', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  negotiateSandbox: async () =>
+    sandbox.negotiation ?? {
+      ok: true,
+      policy: { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' },
+    },
+}))
 
 type Handler = (...arguments_: unknown[]) => unknown
 type Authorize = Authorizer['authorize']
@@ -31,6 +42,7 @@ describe('permission auto-review extension', () => {
   const published: [string, PermissionsService][] = []
 
   afterEach(() => {
+    sandbox.negotiation = undefined
     for (const [sessionId, service] of published.splice(0)) {
       unpublishPermissionsService(sessionId, service)
     }
@@ -325,6 +337,30 @@ describe('permission auto-review extension', () => {
       'auto_review.decision',
       'auto_review.decision',
     ])
+  })
+
+  it.each([
+    {
+      preset: 'codex',
+      status: 'auto-review ready · no investigation: the selected sandbox cannot satisfy the requested policy',
+      warnings: [
+        [
+          `[${EXTENSION_ID}] the reviewer cannot investigate local state: the selected sandbox cannot satisfy the requested policy`,
+        ],
+      ],
+    },
+    { preset: 'claude-code', status: 'auto-review ready', warnings: [] },
+  ])('shows in the footer when the $preset reviewer cannot investigate', async ({ preset, status, warnings }) => {
+    writeFile(configPath(workspace.cwd, 'global'), { preset })
+    sandbox.negotiation = { ok: false, error: new UnsupportedSandboxPolicyError({ operation: 'acquire' }) }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    publish(vi.fn(() => vi.fn()))
+    const harness = start()
+    harness.start()
+    harness.ready()
+
+    await vi.waitFor(() => expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, status))
+    expect(warn.mock.calls).toStrictEqual(warnings)
   })
 
   it('hot-swaps the reviewer generation after a config reset, closing the circuit', async () => {

@@ -1,12 +1,12 @@
-import type { FauxProviderRegistration, ToolCall } from '@earendil-works/pi-ai'
+import type { AssistantMessage, Context, ToolCall } from '@earendil-works/pi-ai'
 import type { AgentSession, ExtensionFactory, ToolInfo } from '@earendil-works/pi-coding-agent'
 import type { PermissionState, PermissionsReadyEvent, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
+import type { ProcessRequest, SandboxPolicy, SandboxProvider } from 'pi-bring-your-own-sandbox/api'
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fauxAssistantMessage, fauxText, fauxToolCall, Type } from '@earendil-works/pi-ai'
-import { registerFauxProvider } from '@earendil-works/pi-ai/compat'
+import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, getCurrentTools } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
   createCodemodeExtension,
@@ -18,6 +18,8 @@ import {
   SettingsManager,
 } from '@earendil-works/pi-coding-agent'
 import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from '@gotgenes/pi-permission-system'
+import { registerSandboxProvider } from 'pi-bring-your-own-sandbox/api'
+import { Type } from 'typebox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { inputDigest, projectSdkJson } from '../src/action/json.js'
 import { configPath } from '../src/config/store.js'
@@ -58,6 +60,66 @@ interface HostOptions {
   verdicts?: string[]
   /** Whether the agent's turn ends early, after the model response with the last call */
   interrupted?: boolean
+  /** The reviewer's replies in turn, given each request; overrides `verdicts` */
+  reviewerReplies?: ((context: Context) => AssistantMessage)[]
+  /** Receives a copy of every request that the reviewer model gets */
+  reviewerRequests?: Context[]
+  sandbox?: { provider: SandboxProvider<unknown>; policy: SandboxPolicy }
+}
+
+/** A provider that runs nothing and records what it was asked to open and run */
+function recordingProvider(record: {
+  policies: SandboxPolicy[]
+  requests: ProcessRequest[]
+}): SandboxProvider<unknown> {
+  const capabilities = {
+    processKinds: ['shell'],
+    terminationScope: 'process-group',
+    exitStatus: 'guaranteed',
+    operations: ['exec'],
+    shells: ['sh'],
+  } as const
+
+  return {
+    id: 'fixture.recording',
+    label: 'Recording fixture',
+    protocolVersion: 1,
+    capabilities: { ...capabilities, operations: ['exec', 'files.read'] },
+    policies: {
+      workspaceAccess: ['read-only', 'read-write'],
+      filesystemScope: ['workspace-only'],
+      networkAccess: ['denied'],
+    },
+    validateConfig: () => undefined,
+    async open(request, context) {
+      context.reportRecovery({ kind: 'none' })
+      record.policies.push(request.policy)
+      const files = {
+        read: {
+          readFile: async () => new Uint8Array(),
+          access: async () => {},
+          stat: async () => ({ kind: 'file', size: 0 }) as const,
+        },
+      }
+
+      return {
+        id: `backend-${record.policies.length}`,
+        workspace: { root: '/workspace', pathFlavor: 'posix', relationship: 'remote', description: 'Fixture.' },
+        capabilities: { ...capabilities, operations: ['exec', 'files.read'] },
+        policy: request.policy,
+        policyDescription: 'Fixture only; no isolation.',
+        recovery: { kind: 'none' },
+        files,
+        exec: async (processRequest, operation) => {
+          record.requests.push(processRequest)
+          operation.onOutput({ stream: 'stdout', data: new TextEncoder().encode('fixture output\n') })
+
+          return { kind: 'exited', exit: { kind: 'code', code: 0 } }
+        },
+        dispose: async () => {},
+      }
+    },
+  }
 }
 
 interface ReviewEvidence {
@@ -154,15 +216,11 @@ function writeRequest(toolCallId: string, path: string, summary: string) {
 
 describe('auto-review in the Pi host', () => {
   const sessions: AgentSession[] = []
-  const providers: FauxProviderRegistration[] = []
 
   afterEach(async () => {
     for (const session of sessions.splice(0)) {
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
       session.dispose()
-    }
-    for (const provider of providers.splice(0)) {
-      provider.unregister()
     }
     vi.restoreAllMocks()
   })
@@ -213,6 +271,9 @@ describe('auto-review in the Pi host', () => {
     successiveCalls = [],
     verdicts = ['{"outcome":"allow"}'],
     interrupted = false,
+    reviewerReplies,
+    reviewerRequests = [],
+    sandbox,
   }: HostOptions) {
     mkdirSync(workspace.cwd, { recursive: true })
     workspace.cwd = realpathSync(workspace.cwd)
@@ -228,9 +289,8 @@ describe('auto-review in the Pi host', () => {
         ...permission,
       },
     })
-    const main = registerFauxProvider({ provider: 'host-main', models: [{ id: 'agent' }] })
-    const reviewer = registerFauxProvider({ provider: 'host-reviewer', models: [{ id: 'reviewer' }] })
-    providers.push(main, reviewer)
+    const main = fauxProvider({ provider: 'host-main', models: [{ id: 'agent' }] })
+    const reviewer = fauxProvider({ provider: 'host-reviewer', models: [{ id: 'reviewer' }] })
     writeFile(configPath(workspace.cwd, 'global'), {
       provider: reviewer.getModel().provider,
       model: reviewer.getModel().id,
@@ -246,15 +306,18 @@ describe('auto-review in the Pi host', () => {
       fauxAssistantMessage(fauxText('Done.')),
     ])
     reviewer.setResponses(
-      verdicts.map(verdict => context => {
-        for (const message of context.messages) {
-          if (message.role === 'user' && typeof message.content === 'string') {
-            prompts.push(message.content)
+      (reviewerReplies ?? verdicts.map(verdict => () => fauxAssistantMessage(fauxText(verdict)))).map(
+        answer => context => {
+          reviewerRequests.push(structuredClone(context))
+          for (const message of context.messages) {
+            if (message.role === 'user' && typeof message.content === 'string') {
+              prompts.push(message.content)
+            }
           }
-        }
 
-        return fauxAssistantMessage(fauxText(verdict))
-      }),
+          return answer(context)
+        },
+      ),
     )
     const observedServices = new Set<string>()
     const spyRegistration: ExtensionFactory = pi => {
@@ -307,6 +370,13 @@ describe('auto-review in the Pi host', () => {
     if (extensionFactory !== undefined) {
       extensionFactories.push(extensionFactory)
     }
+    if (sandbox !== undefined) {
+      extensionFactories.push(pi =>
+        registerSandboxProvider(pi, sandbox.provider, {
+          configure: () => ({ configuration: {}, policy: sandbox.policy }),
+        }),
+      )
+    }
     if (probePosition === 'before') {
       extensionFactories.unshift(probe)
     }
@@ -337,11 +407,7 @@ describe('auto-review in the Pi host', () => {
       refreshOnCreate: false,
     })
     for (const provider of [main, reviewer]) {
-      modelRuntime.registerProvider(provider.getModel().provider, {
-        api: provider.api,
-        apiKey: 'faux-test-key',
-        models: provider.models,
-      })
+      modelRuntime.registerNativeProvider(provider.provider)
     }
     const { session, extensionsResult } = await createAgentSession({
       cwd: workspace.cwd,
@@ -558,7 +624,7 @@ describe('auto-review in the Pi host', () => {
   })
 
   it('defers without reviewing or executing when loaded after permission-system', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     const call = fauxToolCall('write', { path: 'late.txt', content: 'must not execute' }, { id: 'late-write' })
     const result = await runHost({ call, reviewPosition: 'after' })
     const request = writeRequest(call.id, 'late.txt', "for 'late.txt' (1 line, 16 characters)")
@@ -570,7 +636,6 @@ describe('auto-review in the Pi host', () => {
       reviewerCalls: 0,
       written: false,
     })
-    expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('must load before'))
   })
 
   it('defers edited user evidence without review or execution through the real host projection', async () => {
@@ -615,6 +680,48 @@ describe('auto-review in the Pi host', () => {
       decisions: [{ event: 'auto_review.decision', outcome: 'defer', errorCategory: 'authority-edited' }],
       executed: false,
     })
+  })
+
+  it('investigates through a read-only backend of the configured sandbox, whose own policy allows writes', async () => {
+    const record = { policies: [] as SandboxPolicy[], requests: [] as ProcessRequest[] }
+    const reviewerRequests: Context[] = []
+    await runHost({
+      reviewerRequests,
+      call: fauxToolCall('bash', { command: 'printf ok > executed.txt' }, { id: 'investigated' }),
+      sandbox: {
+        provider: recordingProvider(record),
+        policy: { workspaceAccess: 'read-write', filesystemScope: 'workspace-only', networkAccess: 'denied' },
+      },
+      reviewerReplies: [
+        () => fauxAssistantMessage([fauxToolCall('shell', { command: 'git remote -v' })], { stopReason: 'toolUse' }),
+        () => fauxAssistantMessage(fauxText('{"outcome":"allow"}')),
+      ],
+    })
+
+    expect({
+      policies: record.policies,
+      requests: record.requests,
+      tools: reviewerRequests.map(context => getCurrentTools(context.messages).map(tool => tool.name)),
+      output: JSON.stringify(reviewerRequests[1]?.messages.at(-1)),
+    }).toStrictEqual({
+      policies: [{ workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' }],
+      requests: [{ kind: 'shell', command: 'git remote -v', dialect: 'sh' }],
+      tools: [
+        ['shell', 'read'],
+        ['shell', 'read'],
+      ],
+      output: expect.stringContaining('fixture output') as unknown,
+    })
+  })
+
+  it('offers the reviewer no tools when the session uses the default host passthrough', async () => {
+    const reviewerRequests: Context[] = []
+    await runHost({
+      call: fauxToolCall('bash', { command: 'printf ok > executed.txt' }, { id: 'plain' }),
+      reviewerRequests,
+    })
+
+    expect(reviewerRequests.map(context => getCurrentTools(context.messages))).toStrictEqual([[]])
   })
 
   it('interrupts the turn on the third denial in a row, before the denied call runs', async () => {

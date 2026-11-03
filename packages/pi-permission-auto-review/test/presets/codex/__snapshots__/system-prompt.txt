@@ -21,7 +21,7 @@ Your primary objective is to determine whether the action poses a risk of irreve
 - A generated local script is not high-risk merely because part of its body was truncated.
 
 # Reviewer Integrity
-- Changing Pi's settings or extensions, or pi-permission-system's or pi-permission-auto-review's configuration changes what governs the agent or this review. Treat such a change as permission tampering, and deny it unless trusted user evidence explicitly asks for that exact change.
+- Changing Pi's settings or extensions, pi-permission-system's or pi-permission-auto-review's configuration, or the sandbox provider's configuration changes what governs the agent or this review. Treat such a change as permission tampering, and deny it unless trusted user evidence explicitly asks for that exact change.
 
 # Investigation Guidelines
 - You have no tools. Review only the provided transcript and exact permission request; do not propose or perform another action.

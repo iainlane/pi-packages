@@ -1,7 +1,9 @@
 import type { AutoReviewConfig } from '../config/config.js'
-import type { Api, AssistantMessage, Message, Model, Usage } from '@earendil-works/pi-ai'
+import type { InvestigationRun } from '../investigation/investigation.js'
+import type { Api, AssistantMessage, Message, Model, ToolCall, ToolChoice, Usage } from '@earendil-works/pi-ai'
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent'
 import { clampThinkingLevel, isRetryableAssistantError } from '@earendil-works/pi-ai'
+import { approximateTokens } from '../text.js'
 
 const FIRST_RETRY_DELAY_MS = 250
 const MAX_RETRY_DELAY_MS = 30_000
@@ -30,7 +32,21 @@ export interface ModelRequest {
   maxTokens?: number | undefined
 }
 
-type CallResult<T> = { ok: true; value: T; reply: AssistantMessage } | { ok: false; failure: CallFailure }
+type CallResult<T> =
+  | {
+      ok: true
+      value: T
+      reply: AssistantMessage
+      /** The last request sent, with the investigation calls and their results that came before the reply */
+      request: ModelRequest
+    }
+  | { ok: false; failure: CallFailure }
+
+/** One call's reply: a verdict to parse, or investigation calls to answer before the next call */
+type CallReply<T> =
+  | { ok: true; value: T; reply: AssistantMessage }
+  | { ok: true; toolCalls: ToolCall[]; reply: AssistantMessage; run: InvestigationRun }
+  | { ok: false; failure: CallFailure }
 
 /** A `parse` that throws marks the reply malformed, which is retried like a transient failure */
 export type ModelCall = <T>(request: ModelRequest, parse: (text: string) => T) => Promise<CallResult<T>>
@@ -47,6 +63,8 @@ export interface ModelCallOptions {
   deadline: number
   /** Every call adds its usage here, retries included */
   usage: CallUsage
+  /** The tools that the reviewer may call during this review, with their budget */
+  investigation?: InvestigationRun | undefined
 }
 
 function abortError(): Error {
@@ -103,17 +121,19 @@ export function replyText(message: AssistantMessage): string {
 }
 
 export function createModelCall(options: ModelCallOptions): ModelCall {
-  const { registry, model, config, signal, timeoutSignal, deadline, usage } = options
+  const { registry, model, config, signal, timeoutSignal, deadline, usage, investigation } = options
   const attemptTimeoutMs = config.attemptTimeoutMs ?? config.timeoutMs
-  const aborted = (): CallResult<never> => ({ ok: false, failure: timeoutSignal.aborted ? 'timeout' : 'cancelled' })
+  const aborted = (): { ok: false; failure: CallFailure } => ({
+    ok: false,
+    failure: timeoutSignal.aborted ? 'timeout' : 'cancelled',
+  })
 
-  return async (request, parse) => {
-    if (signal.aborted) {
-      return aborted()
-    }
-    if (request.tokens + OUTPUT_RESERVE_TOKENS > model.contextWindow) {
-      return { ok: false, failure: 'input-budget-exceeded' }
-    }
+  /** Calls the model once for `messages`, retrying transient failures and replies that `parse` rejects */
+  async function call<T>(
+    request: ModelRequest,
+    parse: (text: string) => T,
+    toolChoice: ToolChoice | undefined,
+  ): Promise<CallReply<T>> {
     // Clamped as in Pi's own turns: `off` on a model that cannot stop thinking means its least effort, not its default
     const reasoning = clampThinkingLevel(model, request.reasoning)
 
@@ -126,7 +146,11 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
         // The registry resolves the provider's authentication per request, so an unusable login lands here
         const stream = registry.streamSimple(
           model,
-          { systemPrompt: request.systemPrompt, messages: request.messages },
+          {
+            systemPrompt: request.systemPrompt,
+            messages: request.messages,
+            ...(investigation === undefined ? {} : { tools: investigation.tools }),
+          },
           {
             maxRetries: 0,
             signal: attemptSignal,
@@ -135,6 +159,7 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
             sessionId: `${SESSION_KEY_PREFIX}${options.sessionId}`,
             ...(reasoning === 'off' ? {} : { reasoning }),
             ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
+            ...(toolChoice === undefined ? {} : { toolChoice }),
           },
         )
         const reply = await raceWithSignal(stream.result(), attemptSignal)
@@ -146,6 +171,10 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
         }
         if (reply.stopReason === 'error' || reply.stopReason === 'aborted') {
           throw new Error(reply.errorMessage ?? reply.stopReason)
+        }
+        const toolCalls = reply.content.filter(block => block.type === 'toolCall')
+        if (investigation !== undefined && toolChoice !== 'none' && toolCalls.length > 0) {
+          return { ok: true, toolCalls, reply, run: investigation }
         }
         failure = 'invalid-response'
 
@@ -163,6 +192,45 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
       await sleep(Math.min(FIRST_RETRY_DELAY_MS * 4 ** attempt, MAX_RETRY_DELAY_MS), signal)
       if (signal.aborted) {
         return aborted()
+      }
+    }
+  }
+
+  return async (request, parse) => {
+    if (signal.aborted) {
+      return aborted()
+    }
+    let messages = request.messages
+    let tokens = request.tokens
+    let toolChoice: ToolChoice | undefined
+    for (;;) {
+      if (tokens + OUTPUT_RESERVE_TOKENS > model.contextWindow) {
+        return { ok: false, failure: 'input-budget-exceeded' }
+      }
+      const result = await call({ ...request, messages }, parse, toolChoice)
+      if (!result.ok) {
+        return result
+      }
+      if (!('toolCalls' in result)) {
+        return { ...result, request: { ...request, messages, tokens } }
+      }
+
+      const { run } = result
+      let results: Message[]
+      try {
+        results = await run.run(result.toolCalls)
+      } catch (error) {
+        if (signal.aborted) {
+          return aborted()
+        }
+        throw error
+      }
+      messages = [...messages, result.reply, ...results]
+      tokens = approximateTokens(JSON.stringify({ systemPrompt: request.systemPrompt, messages, tools: run.tools }))
+      // Every request carries the tools, since providers reject a history with tool calls but no tool definitions.
+      // Once the budget is spent, the reviewer is told to answer without calling them
+      if (run.exhausted) {
+        toolChoice = 'none'
       }
     }
   }

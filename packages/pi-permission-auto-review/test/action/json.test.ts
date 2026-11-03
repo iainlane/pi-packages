@@ -1,5 +1,5 @@
 import type { JsonValue } from '../../src/action/json.js'
-import { Type } from '@earendil-works/pi-ai'
+import { Type } from 'typebox'
 import * as v from 'valibot'
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import {

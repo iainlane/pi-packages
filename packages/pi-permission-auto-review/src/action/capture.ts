@@ -124,7 +124,10 @@ function canonicalPath(path: string): string {
   }
 }
 
-/** Files and directories whose contents decide which extensions run and what this reviewer and the permission system allow */
+/**
+ * Files and directories whose contents decide which extensions run, what this reviewer and the permission system
+ * allow, and which sandbox the reviewer investigates in
+ */
 function protectedTargets(cwd: string): string[] {
   const agentDir = getAgentDir()
 
@@ -135,6 +138,7 @@ function protectedTargets(cwd: string): string[] {
     join(cwd, '.pi', 'extensions', 'pi-permission-system'),
     join(agentDir, 'settings.json'),
     join(cwd, '.pi', 'settings.json'),
+    join(agentDir, 'byos.json'),
   ].map(canonicalPath)
 }
 
