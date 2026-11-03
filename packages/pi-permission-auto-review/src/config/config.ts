@@ -6,7 +6,7 @@ export const CODEX_PROVIDER = 'openai-codex'
 export const CODEX_AUTO_REVIEW_MODEL = 'codex-auto-review'
 const MAX_TIMEOUT_MS = 300_000
 export const CONFIG_SCHEMA_URL =
-  'https://raw.githubusercontent.com/mzwing/pi-packages/master/packages/pi-permission-auto-review/schemas/config.schema.json'
+  'https://raw.githubusercontent.com/iainlane/pi-packages/codex-parity/packages/pi-permission-auto-review/schemas/config.schema.json'
 
 export const PRESET_NAMES = ['codex', 'claude-code'] as const
 export const REASONING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
