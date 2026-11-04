@@ -65,6 +65,11 @@ interface HostOptions {
   /** Receives a copy of every request that the reviewer model gets */
   reviewerRequests?: Context[]
   sandbox?: { provider: SandboxProvider<unknown>; policy: SandboxPolicy }
+  /** The main model's replies after the first call, given each request; overrides `successiveCalls` */
+  followUps?: ((context: Context) => AssistantMessage)[]
+  /** The tool results that the session should end with, when they differ from one result per call */
+  results?: { toolName: string; isError: boolean }[]
+  confirm?: (title: string, message: string) => Promise<boolean>
 }
 
 /** A provider that runs nothing and records what it was asked to open and run */
@@ -274,6 +279,9 @@ describe('auto-review in the Pi host', () => {
     reviewerReplies,
     reviewerRequests = [],
     sandbox,
+    followUps,
+    results,
+    confirm,
   }: HostOptions) {
     mkdirSync(workspace.cwd, { recursive: true })
     workspace.cwd = realpathSync(workspace.cwd)
@@ -301,10 +309,14 @@ describe('auto-review in the Pi host', () => {
     const events: unknown[] = []
     const errors: unknown[] = []
     const calls = [call, ...successiveCalls]
-    main.setResponses([
-      ...calls.map(toolCall => fauxAssistantMessage(toolCall, { stopReason: 'toolUse' })),
-      fauxAssistantMessage(fauxText('Done.')),
-    ])
+    main.setResponses(
+      followUps === undefined
+        ? [
+            ...calls.map(toolCall => fauxAssistantMessage(toolCall, { stopReason: 'toolUse' })),
+            fauxAssistantMessage(fauxText('Done.')),
+          ]
+        : [fauxAssistantMessage(call, { stopReason: 'toolUse' }), ...followUps],
+    )
     reviewer.setResponses(
       (reviewerReplies ?? verdicts.map(verdict => () => fauxAssistantMessage(fauxText(verdict)))).map(
         answer => context => {
@@ -415,25 +427,51 @@ describe('auto-review in the Pi host', () => {
       modelRuntime,
       model: main.getModel(),
       thinkingLevel: 'off',
-      tools: ['bash', 'write', 'codemode', ...(extensionFactory === undefined ? [] : [call.name])],
+      tools: [
+        'bash',
+        'write',
+        'codemode',
+        ...(extensionFactory === undefined ? [] : [call.name]),
+        ...(followUps === undefined ? [] : ['request_manual_approval']),
+      ],
       resourceLoader,
       sessionManager: SessionManager.inMemory(workspace.cwd),
       settingsManager,
     })
     sessions.push(session)
-    await session.bindExtensions({ mode: 'rpc', onError: error => errors.push(error) })
+    await session.bindExtensions({
+      mode: 'rpc',
+      // A UI that ignores everything except confirmations
+      ...(confirm === undefined
+        ? {}
+        : {
+            uiContext: {
+              ...Object.fromEntries(
+                ['notify', 'setStatus', 'setWidget', 'setTitle', 'setFooter', 'setHeader', 'setWorkingMessage'].map(
+                  method => [method, () => undefined],
+                ),
+              ),
+              confirm,
+            } as never,
+          }),
+      onError: error => errors.push(error),
+    })
     await session.prompt(prompt)
     expect({ errors, loadErrors: extensionsResult.errors, mainCalls: main.state.callCount }).toStrictEqual({
       errors: [],
       loadErrors: [],
-      mainCalls: calls.length + (interrupted ? 0 : 1),
+      mainCalls: followUps === undefined ? calls.length + (interrupted ? 0 : 1) : followUps.length + 1,
     })
     const refused = deny || interrupted || reviewPosition === 'after'
     expect(
       session.messages
         .filter(message => message.role === 'toolResult')
         .map(message => ({ toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError })),
-    ).toStrictEqual(calls.map(toolCall => ({ toolCallId: toolCall.id, toolName: toolCall.name, isError: refused })))
+    ).toStrictEqual(
+      results === undefined
+        ? calls.map(toolCall => ({ toolCallId: toolCall.id, toolName: toolCall.name, isError: refused }))
+        : results.map(result => ({ ...result, toolCallId: expect.any(String) as unknown })),
+    )
 
     return { details, prompts, events, reviewerCalls: reviewer.state.callCount }
   }
@@ -711,6 +749,44 @@ describe('auto-review in the Pi host', () => {
         ['shell', 'read'],
       ],
       output: expect.stringContaining('fixture output') as unknown,
+    })
+  })
+
+  it('runs a refused command once after the person approves it, through the normal permission checks', async () => {
+    const call = fauxToolCall('bash', { command: 'printf approved > approved.txt' }, { id: 'refused' })
+    const confirmations: string[] = []
+    const appeal = (context: Context): AssistantMessage => {
+      const refusal = JSON.stringify(context.messages.at(-1))
+      const denialId = /denial_id \\"([\da-f-]+)\\"/.exec(refusal)?.[1] ?? 'missing'
+
+      return fauxAssistantMessage(
+        [fauxToolCall('request_manual_approval', { denial_id: denialId, reason: 'The person asked for this file.' })],
+        { stopReason: 'toolUse' },
+      )
+    }
+    const result = await runHost({
+      call,
+      verdicts: ['{"outcome":"deny","rationale":"Not authorized."}'],
+      followUps: [appeal, () => fauxAssistantMessage(fauxText('Done.'))],
+      results: [
+        { toolName: 'bash', isError: true },
+        { toolName: 'request_manual_approval', isError: false },
+      ],
+      confirm: async (_title, message) => {
+        confirmations.push(message.split('\n').slice(0, 4).join('\n'))
+
+        return true
+      },
+    })
+
+    expect({
+      reviews: result.reviewerCalls,
+      confirmations,
+      written: readFileSync(join(workspace.cwd, 'approved.txt'), 'utf8'),
+    }).toStrictEqual({
+      reviews: 1,
+      confirmations: [`Tool: bash\nWorking directory: ${workspace.cwd}\nCommand:\n  printf approved > approved.txt`],
+      written: 'approved',
     })
   })
 

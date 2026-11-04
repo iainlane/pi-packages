@@ -4,7 +4,12 @@ import { DEFAULT_CONFIG } from '../../src/config/config.js'
 import { formatAutoStatus } from '../../src/statistics/format.js'
 import { emptyModel, emptySummary } from '../../src/statistics/summary.js'
 
-const state: AutoStatusState = { registered: true, config: DEFAULT_CONFIG, investigation: { available: true } }
+const state: AutoStatusState = {
+  registered: true,
+  config: DEFAULT_CONFIG,
+  investigation: { available: true },
+  circuitOpen: false,
+}
 
 function sample(): StatusData & { global: { summary: ReturnType<typeof emptySummary> } } {
   const session = { ...emptySummary(), reviews: { allow: 12, deny: 2, defer: 1 }, estimatedCostUsd: 0.012345 }
@@ -160,30 +165,76 @@ describe('statistics presentation', () => {
     ).toStrictEqual([`${'Estimated cost'.padEnd(21)}  ${`USD ${cost.toExponential(2)}`.padStart(12)}  USD 0.004100`])
   })
 
-  it('shows the human decisions on deferred asks with their resolution categories', () => {
+  it('keeps permission prompts, manual approvals and the outcome of approved commands separate', () => {
     const data = sample()
     Object.assign(data.session, {
       prompts: 2,
       human: { approved: 1, rejected: 1, unavailable: 0, waitMs: 4_000 },
       resolutions: { user_approved: 1, user_denied: 1 },
     })
+    Object.assign(data.session.manual, {
+      requested: 2,
+      prompted: 2,
+      approved: 1,
+      cancelled: 1,
+      dispatched: 1,
+      executed: 1,
+      failed: 1,
+      failures: { 'confirmation-timeout': 1, 'execution-error': 1 },
+    })
+    /** Rows aligned as the report aligns them: labels padded to the longest, values right-aligned */
+    const block = (rows: [string, string][]): string[] => {
+      const labels = Math.max(...rows.map(([label]) => label.length))
+      const values = Math.max(...rows.map(([, value]) => value.length))
+
+      return rows.map(([label, value]) => `${label.padEnd(labels)}  ${value.padStart(values)}`)
+    }
 
     expect(formatAutoStatus(state, data, { view: { scope: 'session', section: 'human' } })).toBe(
       [
         'Auto-review: This session / Human approvals',
         '',
         'Permission confirmations',
-        ...[
+        ...block([
           ['Prompts shown', '2'],
           ['Approved', '1'],
           ['Refused or dismissed', '1'],
           ['Confirmation unavailable', '0'],
           ['Waiting time', '4,000 ms'],
-        ].map(([label = '', value = '']) => `${label.padEnd(24)}  ${value.padStart(8)}`),
+        ]),
+        '',
+        'Manual approval requests',
+        ...block([
+          ['Requests', '2'],
+          ['Prompts shown', '2'],
+          ['Approved', '1'],
+          ['Rejected', '0'],
+          ['Cancelled', '1'],
+          ['Confirmation unavailable', '0'],
+          ['Waiting time', '0 ms'],
+        ]),
+        '',
+        'Manually approved commands',
+        ...block([
+          ['Dispatched', '1'],
+          ['Ran', '1'],
+          ['Completed', '0'],
+          ['Failed', '1'],
+          ['Blocked', '0'],
+          ['Running time', '0 ms'],
+        ]),
         '',
         'Permission resolution categories',
-        'user_approved  1',
-        'user_denied    1',
+        ...block([
+          ['user_approved', '1'],
+          ['user_denied', '1'],
+        ]),
+        '',
+        'Why manual approvals did not complete',
+        ...block([
+          ['confirmation-timeout', '1'],
+          ['execution-error', '1'],
+        ]),
       ].join('\n'),
     )
   })
@@ -239,17 +290,21 @@ describe('statistics presentation', () => {
     })
   })
 
-  it('reports an unregistered reviewer and a missing config', () => {
-    const output = formatAutoStatus({ registered: false, config: undefined, investigation: undefined }, sample())
+  it('reports an unregistered reviewer, a missing config and the denial limit', () => {
+    const output = formatAutoStatus(
+      { registered: false, config: undefined, investigation: undefined, circuitOpen: true },
+      sample(),
+    )
 
     expect(
       output
         .split('\n')
-        .filter(line => line.startsWith('Model') || line.startsWith('The') || line.startsWith('Reviewer')),
+        .filter(line => ['Model', 'The', 'Reviewer', 'Automatic'].some(start => line.startsWith(start))),
     ).toStrictEqual([
       'Model: Unavailable',
       'Reviewer configuration is unavailable.',
       'The reviewer is not registered with the permission service.',
+      'Automatic reviews are being refused because the denial limit was reached.',
     ])
   })
 

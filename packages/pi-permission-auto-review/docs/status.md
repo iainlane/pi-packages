@@ -43,6 +43,11 @@ that make the cost incomplete; the totals always include everything.
   pi-permission-system then showed to you, with your answer and how long the
   prompt waited. Approving for the session counts as an approval; a prompt that
   timed out or could not be shown counts as without an answer.
+- **Manual approvals** count requests to run a refused command, whether the
+  confirmation was shown and what you answered, and whether the approved
+  command was dispatched, ran, completed, failed or was blocked, with the reason
+  when a request did not complete. An approval is not counted as an automatic
+  allow.
 
 The estimated cost uses Pi's model catalogue. The derived `codex-auto-review`
 model has no catalogue entry, so its calls use the prices of the Codex model

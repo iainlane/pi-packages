@@ -98,6 +98,7 @@ describe('permission auto-review extension', () => {
         commands.set(name, options)
       },
       appendEntry,
+      registerTool: vi.fn(),
     }
     permissionAutoReview(pi as unknown as ExtensionAPI)
 

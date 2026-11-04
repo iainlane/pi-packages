@@ -154,4 +154,24 @@ describe('session statistics', () => {
       summary({ since: 1_000, prompts: 1, human, resolutions: { [resolution]: 1 } }),
     )
   })
+
+  it('counts manual approval stages, their timings and why a request did not complete', () => {
+    const statistics = new SessionStatistics('session-1')
+    for (const record of [
+      { stage: 'requested' },
+      { stage: 'prompted' },
+      { stage: 'cancelled', waitMs: 300_000, category: 'confirmation-timeout' },
+    ] as const) {
+      statistics.add({ kind: 'manual', session: SESSION, ...record }, 1_000)
+    }
+
+    expect(statistics.summary.manual).toStrictEqual({
+      ...emptySummary().manual,
+      requested: 1,
+      prompted: 1,
+      cancelled: 1,
+      waitMs: 300_000,
+      failures: { 'confirmation-timeout': 1 },
+    })
+  })
 })

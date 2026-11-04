@@ -15,6 +15,8 @@ export interface AutoStatusState {
   config: AutoReviewConfig | undefined
   /** Undefined until the sandbox provider has answered */
   investigation: InvestigationAvailability | undefined
+  /** Whether the denial limit refuses every ask without review until the next run */
+  circuitOpen: boolean
 }
 
 export interface StatusData {
@@ -51,7 +53,7 @@ export interface StatusFormatOptions {
 /** A summary as the report shows it: each breakdown limited, with how much was left out */
 interface SummaryView extends StatisticsSummary {
   issueList: string[]
-  omitted: Record<'models' | 'failures' | 'resolutions' | 'issues', number>
+  omitted: Record<'models' | 'failures' | 'resolutions' | 'manualFailures' | 'issues', number>
 }
 
 const SCOPE_TITLES = { session: 'This session', global: 'Global' } satisfies Record<StatisticsScope, string>
@@ -114,12 +116,14 @@ function view(summary: StatisticsSummary): SummaryView {
     ...summary,
     failures: limited(summary.failures),
     resolutions: limited(summary.resolutions),
+    manual: { ...summary.manual, failures: limited(summary.manual.failures) },
     models: summary.models.slice(0, DETAIL_LIMIT),
     issueList: issues.slice(0, DETAIL_LIMIT),
     omitted: {
       models: Math.max(0, summary.models.length - DETAIL_LIMIT),
       failures: Math.max(0, Object.keys(summary.failures).length - DETAIL_LIMIT),
       resolutions: Math.max(0, Object.keys(summary.resolutions).length - DETAIL_LIMIT),
+      manualFailures: Math.max(0, Object.keys(summary.manual.failures).length - DETAIL_LIMIT),
       issues: Math.max(0, issues.length - DETAIL_LIMIT),
     },
   }
@@ -181,6 +185,9 @@ function notices(state: AutoStatusState, data: StatusData): string[] {
   }
   if (!state.registered) {
     problems.push('The reviewer is not registered with the permission service.')
+  }
+  if (state.circuitOpen) {
+    problems.push('Automatic reviews are being refused because the denial limit was reached.')
   }
   problems.push(...scopeProblems(view(data.session), 'session'))
   problems.push(
@@ -321,6 +328,8 @@ function usage(summary: SummaryView, columns: number): string[] {
 }
 
 function human(summary: SummaryView, columns: number): string[] {
+  const { manual } = summary
+
   return [
     'Permission confirmations',
     ...statusTable(
@@ -333,10 +342,41 @@ function human(summary: SummaryView, columns: number): string[] {
       ],
       columns,
     ),
+    '',
+    'Manual approval requests',
+    ...statusTable(
+      [
+        ['Requests', count.format(manual.requested)],
+        ['Prompts shown', count.format(manual.prompted)],
+        ['Approved', count.format(manual.approved)],
+        ['Rejected', count.format(manual.rejected)],
+        ['Cancelled', count.format(manual.cancelled)],
+        ['Confirmation unavailable', count.format(manual.unavailable)],
+        ['Waiting time', `${count.format(manual.waitMs)} ms`],
+      ],
+      columns,
+    ),
+    '',
+    'Manually approved commands',
+    ...statusTable(
+      [
+        ['Dispatched', count.format(manual.dispatched)],
+        ['Ran', count.format(manual.executed)],
+        ['Completed', count.format(manual.completed)],
+        ['Failed', count.format(manual.failed)],
+        ['Blocked', count.format(manual.blocked)],
+        ['Running time', `${count.format(manual.executionMs)} ms`],
+      ],
+      columns,
+    ),
     ...(Object.keys(summary.resolutions).length > 0
       ? ['', 'Permission resolution categories', ...statusTable(categoryRows(summary.resolutions), columns)]
       : []),
     ...omitted('permission resolution categories', summary.omitted.resolutions),
+    ...(Object.keys(manual.failures).length > 0
+      ? ['', 'Why manual approvals did not complete', ...statusTable(categoryRows(manual.failures), columns)]
+      : []),
+    ...omitted('manual approval failure categories', summary.omitted.manualFailures),
   ]
 }
 

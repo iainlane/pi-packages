@@ -1,9 +1,9 @@
-import type { StatisticsSummary, TokenCounts } from './summary.js'
+import type { ManualStage, StatisticsSummary, TokenCounts } from './summary.js'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
 import { createHash } from 'node:crypto'
 import * as v from 'valibot'
 import { EXTENSION_ID } from '../config/config.js'
-import { addSummary, emptyModel, emptySummary, TOKEN_FIELDS, tokenCountsSchema } from './summary.js'
+import { addSummary, emptyModel, emptySummary, MANUAL_STAGES, TOKEN_FIELDS, tokenCountsSchema } from './summary.js'
 
 export const STATISTICS_ENTRY_TYPE: string = `${EXTENSION_ID}:statistics.v1`
 
@@ -46,6 +46,15 @@ export type StatisticsRecord =
     }
   | (UsageReport & { kind: 'late-usage'; session: string; call: string; provider: string; model: string })
   | { kind: 'human'; session: string; prompted: boolean; resolution: string; waitMs: number | null }
+  | {
+      kind: 'manual'
+      session: string
+      stage: ManualStage
+      waitMs?: number | undefined
+      executionMs?: number | undefined
+      /** Why the request failed or was cancelled, such as `confirmation-timeout` */
+      category?: string | undefined
+    }
 
 const count = v.pipe(v.number(), v.integer(), v.minValue(0))
 const quantity = v.pipe(v.number(), v.minValue(0))
@@ -100,6 +109,14 @@ const recordSchema: v.GenericSchema<StatisticsRecord> = v.variant('kind', [
     prompted: v.boolean(),
     resolution: category,
     waitMs: v.nullable(quantity),
+  }),
+  v.strictObject({
+    kind: v.literal('manual'),
+    session,
+    stage: v.picklist(MANUAL_STAGES),
+    waitMs: v.optional(quantity),
+    executionMs: v.optional(quantity),
+    category: v.optional(category),
   }),
 ])
 
@@ -202,6 +219,15 @@ function recordDelta(record: StatisticsRecord, pendingCall = true): StatisticsSu
 
       return delta
     }
+    case 'manual':
+      delta.manual[record.stage] = 1
+      delta.manual.waitMs = record.waitMs ?? 0
+      delta.manual.executionMs = record.executionMs ?? 0
+      if (record.category !== undefined) {
+        delta.manual.failures[record.category] = 1
+      }
+
+      return delta
   }
 }
 

@@ -1,6 +1,12 @@
 import type { JsonObject } from './json.js'
 import type { ReviewAction, ToolRegistration } from './schema.js'
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolInfo } from '@earendil-works/pi-coding-agent'
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ToolCallEvent,
+  ToolCallEventResult,
+  ToolInfo,
+} from '@earendil-works/pi-coding-agent'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -36,6 +42,21 @@ interface CapturedAction {
   sessionId: string
   registration?: ToolRegistration | undefined
 }
+
+/** A captured call as manual approval binds to it; `digest` is undefined once the live input differs from the capture */
+export interface CapturedInvocation {
+  readonly toolName: string
+  readonly toolCallId: string
+  readonly parentToolCallId: string | undefined
+  readonly cwd: string
+  readonly sessionId: string
+  readonly input: Readonly<JsonObject> | undefined
+  readonly digest: string | undefined
+  readonly registrationDigest: string | undefined
+}
+
+/** Runs in the capture's `tool_call` handler and can block the call */
+type CaptureObserver = (invocation: CapturedInvocation, ctx: ExtensionContext) => ToolCallEventResult | undefined
 
 interface McpToolName {
   server: string
@@ -155,12 +176,25 @@ function isProtectedTarget(path: string, cwd: string): boolean {
 export class ActionCapture {
   private readonly pi: ExtensionAPI
   private readonly entries = new Map<string, CapturedAction>()
+  private readonly observers = new Set<CaptureObserver>()
   private warnedUnavailable = false
 
   constructor(pi: ExtensionAPI) {
     this.pi = pi
     pi.on('tool_call', (event, ctx) => {
       this.capture(event, ctx)
+      const invocation = this.invocation(event.toolCallId)
+      if (invocation === undefined) {
+        return undefined
+      }
+      for (const observer of this.observers) {
+        const result = observer(invocation, ctx)
+        if (result?.block === true) {
+          return result
+        }
+      }
+
+      return undefined
     })
     pi.on('tool_execution_end', event => {
       this.entries.delete(event.toolCallId)
@@ -171,6 +205,38 @@ export class ActionCapture {
     }
     pi.on('session_start', clear)
     pi.on('session_shutdown', clear)
+  }
+
+  /** Observes every captured call, after its capture and before any later extension's handler */
+  onCaptured(observer: CaptureObserver): void {
+    this.observers.add(observer)
+  }
+
+  invocation(toolCallId: string): CapturedInvocation | undefined {
+    const entry = this.entries.get(toolCallId)
+    if (entry === undefined) {
+      return undefined
+    }
+    let digest = entry.digest
+    try {
+      if (digest !== undefined && digest !== inputDigest(parseJsonValue(entry.liveInput))) {
+        digest = undefined
+      }
+    } catch {
+      digest = undefined
+    }
+
+    return Object.freeze({
+      toolName: entry.toolName,
+      toolCallId,
+      parentToolCallId: entry.parentToolCallId,
+      cwd: entry.cwd,
+      sessionId: entry.sessionId,
+      input: entry.input,
+      digest,
+      registrationDigest:
+        entry.registration === undefined ? undefined : inputDigest(projectSdkJson(entry.registration)),
+    })
   }
 
   private capture(event: ToolCallEvent, ctx: ExtensionContext): void {

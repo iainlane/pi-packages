@@ -30,7 +30,7 @@ function setup(mode: 'tui' | 'rpc' | 'print', answers: (string | undefined)[] = 
         return { signal, isCurrent: () => !signal.aborted }
       },
     },
-    () => ({ registered: true, config: DEFAULT_CONFIG, investigation: { available: true } }),
+    () => ({ registered: true, config: DEFAULT_CONFIG, investigation: { available: true }, circuitOpen: false }),
   )
   const context = {
     mode,

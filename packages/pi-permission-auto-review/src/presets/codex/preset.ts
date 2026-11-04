@@ -1,7 +1,7 @@
 import type { Preset } from '../presets.js'
 import { nextConversation, prepareReview } from '../../reviewer/conversation.js'
 import { OUTPUT_RESERVE_TOKENS } from '../../reviewer/model-call.js'
-import { approximateTokens } from '../../text.js'
+import { approximateTokens, truncateToCharacters } from '../../text.js'
 import { DenialCircuitBreaker } from './circuit-breaker.js'
 import { BUILT_IN_RULES, buildSystemPrompt, POLICY_REVISION } from './policy.js'
 import { buildFollowUpPrompt, buildUserPrompt } from './review-prompt.js'
@@ -9,6 +9,8 @@ import { evidenceChangedSince, manifestFields, renderTranscript } from './transc
 import { parseReviewAssessment, REVIEW_ASSESSMENT_SCHEMA } from './verdict.js'
 
 // Verbatim `REJECTION_INSTRUCTIONS` from openai/codex `codex-rs/prompts/src/model_messages/guardian.rs`
+// Codex's limit for the reviewer's rationale in a rejection, in characters at four per token
+const MAX_RATIONALE_CHARACTERS = 900 * 4
 const REJECTION_INSTRUCTIONS =
   'The agent must not attempt to achieve the same outcome via workaround, indirect execution, or policy circumvention. Proceed only with a materially safer alternative, or if the user explicitly approves the action after being informed of the risk. Otherwise, stop and request user input'
 
@@ -92,7 +94,7 @@ export const CODEX_PRESET: Preset = {
     // instruction against working around the denial
     return {
       kind: 'deny',
-      reason: `${assessment.rationale} (risk: ${assessment.riskLevel}, user authorization: ${assessment.userAuthorization}). ${REJECTION_INSTRUCTIONS}`,
+      reason: `${truncateToCharacters(assessment.rationale, MAX_RATIONALE_CHARACTERS)} (risk: ${assessment.riskLevel}, user authorization: ${assessment.userAuthorization}). ${REJECTION_INSTRUCTIONS}`,
       fields: graded,
       conversation: next,
     }

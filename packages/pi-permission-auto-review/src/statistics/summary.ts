@@ -2,6 +2,23 @@ import * as v from 'valibot'
 
 export const TOKEN_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h'] as const
 
+export const MANUAL_STAGES = [
+  'requested',
+  'prompted',
+  'approved',
+  'rejected',
+  'cancelled',
+  'unavailable',
+  'dispatched',
+  'executed',
+  'completed',
+  'failed',
+  'blocked',
+] as const
+
+/** A step of a manual approval request; approval and running the action are counted separately */
+export type ManualStage = (typeof MANUAL_STAGES)[number]
+
 export type TokenCounts = Record<(typeof TOKEN_FIELDS)[number], number>
 
 export interface ModelStatistics {
@@ -43,6 +60,8 @@ export interface StatisticsSummary {
   human: { approved: number; rejected: number; unavailable: number; waitMs: number }
   /** How pi-permission-system resolved the asks that a review deferred, by its resolution name */
   resolutions: Record<string, number>
+  /** Manual approval requests by stage, their waiting and running time, and why they failed */
+  manual: Record<ManualStage, number> & { waitMs: number; executionMs: number; failures: Record<string, number> }
   models: ModelStatistics[]
   /** Problems that make the totals incomplete, with how often each occurred */
   issues: Record<string, number>
@@ -89,6 +108,22 @@ export const statisticsSummarySchema: v.GenericSchema<StatisticsSummary> = v.str
   prompts: count,
   human: v.strictObject({ approved: count, rejected: count, unavailable: count, waitMs: quantity }),
   resolutions: categories,
+  manual: v.strictObject({
+    requested: count,
+    prompted: count,
+    approved: count,
+    rejected: count,
+    cancelled: count,
+    unavailable: count,
+    dispatched: count,
+    executed: count,
+    completed: count,
+    failed: count,
+    blocked: count,
+    waitMs: quantity,
+    executionMs: quantity,
+    failures: categories,
+  }),
   models: v.array(modelSchema),
   issues: categories,
 })
@@ -135,6 +170,22 @@ export function emptySummary(): StatisticsSummary {
     prompts: 0,
     human: { approved: 0, rejected: 0, unavailable: 0, waitMs: 0 },
     resolutions: {},
+    manual: {
+      requested: 0,
+      prompted: 0,
+      approved: 0,
+      rejected: 0,
+      cancelled: 0,
+      unavailable: 0,
+      dispatched: 0,
+      executed: 0,
+      completed: 0,
+      failed: 0,
+      blocked: 0,
+      waitMs: 0,
+      executionMs: 0,
+      failures: {},
+    },
     models: [],
     issues: {},
   }
@@ -179,6 +230,10 @@ export function addSummary(total: StatisticsSummary, delta: StatisticsSummary): 
   for (const field of ['approved', 'rejected', 'unavailable', 'waitMs'] as const) {
     total.human[field] += delta.human[field]
   }
+  for (const field of [...MANUAL_STAGES, 'waitMs', 'executionMs'] as const) {
+    total.manual[field] += delta.manual[field]
+  }
+  addCategories(total.manual.failures, delta.manual.failures)
   addTokens(total.tokens, delta.tokens)
   addCategories(total.failures, delta.failures)
   addCategories(total.resolutions, delta.resolutions)

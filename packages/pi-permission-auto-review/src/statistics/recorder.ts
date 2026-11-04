@@ -1,7 +1,7 @@
 import type { LateUsage } from './calls.js'
 import type { StatisticsRecord } from './records.js'
 import type { GlobalSnapshot } from './store.js'
-import type { StatisticsSummary } from './summary.js'
+import type { ManualStage, StatisticsSummary } from './summary.js'
 import type { ExtensionAPI, SessionManager } from '@earendil-works/pi-coding-agent'
 import type { PermissionDecisionEvent, PermissionUiPromptEvent } from '@gotgenes/pi-permission-system'
 import { PERMISSIONS_DECISION_CHANNEL, PERMISSIONS_UI_PROMPT_CHANNEL } from '@gotgenes/pi-permission-system'
@@ -16,10 +16,14 @@ const MAX_WATCHED_ASKS = 256
 /** A completed review, as its session record lists it */
 export type ReviewReport = Omit<Extract<StatisticsRecord, { kind: 'review' }>, 'kind' | 'session'>
 
-/** What a session's reviews report; never throws, so recording cannot change a verdict */
+/** What a session's reviews and manual approvals report; never throws, so recording cannot change a verdict */
 export interface ReviewStatistics {
   review: (requestId: string, report: ReviewReport) => void
   late: (usage: LateUsage) => void
+  manual: (
+    stage: ManualStage,
+    details?: { waitMs?: number; executionMs?: number; category?: string | undefined },
+  ) => void
 }
 
 export interface RecorderOptions {
@@ -88,6 +92,12 @@ export class StatisticsRecorder {
           return
         }
         this.record(session, { kind: 'late-usage', session: session.statistics.session, ...usage })
+      },
+      manual: (stage, details = {}) => {
+        if (session === undefined) {
+          return
+        }
+        this.record(session, { kind: 'manual', session: session.statistics.session, stage, ...details })
       },
     }
   }

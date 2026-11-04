@@ -1,4 +1,5 @@
 import type { ActionCapture } from '../action/capture.js'
+import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig } from '../config/config.js'
 import type { Investigation, InvestigationRun } from '../investigation/investigation.js'
 import type { ContextFile, Preset, ReviewFailure, ReviewFields, ReviewOutcome } from '../presets/presets.js'
@@ -7,6 +8,7 @@ import type { ReviewStatistics } from '../statistics/recorder.js'
 import type { ReviewConversation } from './conversation.js'
 import type { CallUsage, ModelCall } from './model-call.js'
 import type { ReviewModelRegistry } from './model.js'
+import type { ReviewSnapshot } from './snapshot.js'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type { Authorizer, AuthorizerVerdict, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { PRESETS } from '../presets/presets.js'
@@ -43,16 +45,20 @@ export interface ReviewerRuntime {
   investigation?: Pick<Investigation, 'availability' | 'forReview'>
   /** Receives every verdict with the calls behind it */
   statistics?: ReviewStatistics
+  /** A reference that lets the person reconsider a refused action, when they can be asked */
+  onRefusal?: (action: ReviewAction, refusal: string, snapshot: ReviewSnapshot) => string | undefined
 }
 
 export interface PermissionReviewer {
   authorize: Authorizer['authorize']
   /** Clears the denials the preset counts per turn */
   resetTurn: () => void
+  /** Whether the denial limit refuses every ask unreviewed */
+  circuitOpen: () => boolean
 }
 
 type AttemptResult =
-  | Exclude<ReviewOutcome, { kind: 'failed' }>
+  | (Exclude<ReviewOutcome, { kind: 'failed' }> & { snapshot: ReviewSnapshot })
   | { kind: 'failed'; failure: FailureCategory; fields: ReviewFields }
 
 /** The model calls of a review and its investigation calls, for statistics */
@@ -64,7 +70,7 @@ interface ReviewWork {
 
 type ReviewResult = ReviewWork &
   (
-    | (Exclude<ReviewOutcome, { kind: 'failed' }> & { usage: CallUsage })
+    | (Exclude<ReviewOutcome, { kind: 'failed' }> & { usage: CallUsage; snapshot: ReviewSnapshot })
     | { kind: 'failed'; failure: FailureCategory; fields?: ReviewFields; usage?: CallUsage }
   )
 
@@ -108,9 +114,10 @@ async function reviewCurrentEvidence(
     }
 
     runtime.provenance.flush(context)
-    const validation = validateSnapshot(snapshot, captureSnapshot(runtime, details))
+    const latest = captureSnapshot(runtime, details)
+    const validation = validateSnapshot(snapshot, latest)
     if (validation === 'current') {
-      return { ...outcome, fields }
+      return { ...outcome, fields, snapshot: latest }
     }
     if (validation === 'stale-snapshot') {
       return { kind: 'failed', failure: 'stale-snapshot', fields }
@@ -322,8 +329,14 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         return finish({ kind: 'deny', reason: result.reason }, { circuitTripped: true, work: result })
       }
       log.review(DECISION_EVENT, { ...entryBase, outcome: 'deny', durationMs, ...diagnostics })
+      const reference = runtime.onRefusal?.(action, result.reason, result.snapshot)
+      const reason =
+        reference === undefined
+          ? result.reason
+          : // pi-permission-system ends the reason with a full stop
+            `${result.reason}. To ask the user to run this exact command anyway, call request_manual_approval with denial_id ${JSON.stringify(reference)} and a reason. Do not retry or change the command`
 
-      return finish({ kind: 'deny', reason: result.reason }, { work: result })
+      return finish({ kind: 'deny', reason }, { work: result })
     } catch {
       // The chain does not isolate a link that throws, so every internal failure has to leave as a verdict
       conversation = undefined
@@ -334,5 +347,5 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
     }
   }
 
-  return { authorize, resetTurn: () => limiter.resetTurn() }
+  return { authorize, resetTurn: () => limiter.resetTurn(), circuitOpen: () => limiter.refusal() !== undefined }
 }

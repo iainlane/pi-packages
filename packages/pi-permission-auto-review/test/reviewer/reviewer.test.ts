@@ -98,6 +98,20 @@ describe('permission reviewer', () => {
     expect(entries[0]?.[1]).not.toHaveProperty('rationale')
   })
 
+  it("shortens a long rationale in the denial to Codex's 900 tokens, keeping its start and end", async () => {
+    const rationale = `Start. ${'x'.repeat(3_980)} End.`
+    const deny = JSON.stringify({ risk_level: 'high', user_authorization: 'unknown', outcome: 'deny', rationale })
+    const { verdict } = await createHarness({ replies: [reply(deny)] }).authorize()
+    const reason = verdict.kind === 'deny' ? (verdict.reason ?? '') : ''
+    const shown = reason.slice(0, reason.indexOf(' (risk: high'))
+
+    expect({ length: shown.length, start: shown.startsWith('Start.'), end: shown.endsWith('End.') }).toStrictEqual({
+      length: 3_600,
+      start: true,
+      end: true,
+    })
+  })
+
   it('shows the reviewer the complete captured input of the call that raised the ask', async () => {
     const action = writeAction('notes.md', 'x'.repeat(50_000))
     const harness = createHarness({ resolve: () => ({ kind: 'eligible', action }) })
@@ -494,6 +508,7 @@ describe('permission reviewer', () => {
         statistics: {
           review: (id: string, report: ReviewReport) => reports.push([id, report]),
           late: (usage: LateUsage) => late.push(usage),
+          manual: () => {},
         },
       }
     }

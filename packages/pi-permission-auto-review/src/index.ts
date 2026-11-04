@@ -7,6 +7,7 @@ import type { PermissionReviewer } from './reviewer/reviewer.js'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import type {
   Authorizer,
+  PermissionDecisionEvent,
   AuthorizerVerdict,
   PermissionsReadyEvent,
   PermissionsService,
@@ -14,15 +15,22 @@ import type {
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
-import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from '@gotgenes/pi-permission-system'
+import {
+  getPermissionsService,
+  PERMISSIONS_DECISION_CHANNEL,
+  PERMISSIONS_READY_CHANNEL,
+} from '@gotgenes/pi-permission-system'
 import { ActionCapture } from './action/capture.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
 import { Investigation } from './investigation/investigation.js'
+import { ManualApprovalController } from './manual/controller.js'
+import { registerManualApprovalTool } from './manual/tool.js'
 import { PRESETS } from './presets/presets.js'
 import { UserMessageProvenance } from './provenance/provenance.js'
 import { createPermissionReviewer } from './reviewer/reviewer.js'
+import { captureSnapshot } from './reviewer/snapshot.js'
 import { registerStatisticsCommand } from './statistics/command.js'
 import { StatisticsRecorder } from './statistics/recorder.js'
 
@@ -41,12 +49,17 @@ type Tally = Record<AuthorizerVerdict['kind'], number>
 /** One reviewer per applied config, so a config change swaps the registered link without a reload */
 interface Generation {
   /** The session's live context: `signal` and `ui` are read when used, not when the generation is made */
-  runtime: Pick<ExtensionContext, 'modelRegistry' | 'sessionManager' | 'signal' | 'ui' | 'abort' | 'hasUI'>
+  runtime: Pick<
+    ExtensionContext,
+    'modelRegistry' | 'sessionManager' | 'signal' | 'ui' | 'abort' | 'hasUI' | 'cwd' | 'mode'
+  >
   config: AutoReviewConfig | undefined
   controller: AbortController
   /** Its controller is replaced each time the session moves to other history, which ends the reviews in progress */
   history: { controller: AbortController }
-  resetTurn: () => void
+  /** Ended when the reviewer is replaced, the session ends or the session moves to other history */
+  sessionSignal: () => AbortSignal
+  reviewer: PermissionReviewer
   authorize: Authorizer['authorize']
   dispose: (() => void) | undefined
 }
@@ -108,6 +121,27 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   // One process hosts a node per session and subagent, and a link is only read by the node it registered in
   let sessionId: string | undefined
   let warnedMissingSessionId = false
+  const manual = new ManualApprovalController(pi, actions, () => {
+    const current = generation
+    if (current?.config === undefined) {
+      return undefined
+    }
+    const context = current.runtime
+
+    return {
+      context,
+      sessionSignal: current.sessionSignal(),
+      circuitOpen: () => current.reviewer.circuitOpen(),
+      snapshot: () => {
+        provenance.flush(context)
+
+        return captureSnapshot({ context, actions })
+      },
+      statistics: recorder.sink(),
+    }
+  })
+  registerManualApprovalTool(pi, manual)
+  pi.events.on(PERMISSIONS_DECISION_CHANNEL, data => manual.decided(data as PermissionDecisionEvent))
 
   function renderStatus(current: Generation): void {
     current.runtime.ui.setStatus(EXTENSION_ID, statusText(current, tally, investigationStatus))
@@ -116,9 +150,10 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   function createGeneration(runtime: Generation['runtime'], config: AutoReviewConfig | undefined): Generation {
     const controller = new AbortController()
     const history = { controller: new AbortController() }
+    const sessionSignal = (): AbortSignal => AbortSignal.any([controller.signal, history.controller.signal])
     const reviewer: PermissionReviewer =
       config === undefined
-        ? { authorize: deferInvalidConfig, resetTurn: () => {} }
+        ? { authorize: deferInvalidConfig, resetTurn: () => {}, circuitOpen: () => false }
         : createPermissionReviewer({
             config,
             actions,
@@ -127,8 +162,9 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
             contextFiles: () => contextFiles,
             investigation,
             statistics: recorder.sink(),
+            onRefusal: (action, refusal, snapshot) => manual.refuse(action, refusal, snapshot),
             get sessionSignal() {
-              return AbortSignal.any([controller.signal, history.controller.signal])
+              return sessionSignal()
             },
           })
     const created: Generation = {
@@ -136,8 +172,18 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
       config,
       controller,
       history,
-      resetTurn: reviewer.resetTurn,
+      sessionSignal,
+      reviewer,
       authorize: async (details, query, log) => {
+        let decided: AuthorizerVerdict | undefined
+        try {
+          decided = manual.authorize(details)
+        } catch {
+          decided = { kind: 'deny', reason: 'Manual approval validation failed' }
+        }
+        if (decided !== undefined) {
+          return decided
+        }
         const pending = reviewer.authorize(details, query, log)
         outstanding.add(pending)
         let verdict: AuthorizerVerdict
@@ -169,6 +215,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   function retire(retired: Generation | undefined): void {
     retired?.dispose?.()
     retired?.controller.abort()
+    manual.invalidate()
   }
 
   function reportIssues(issues: string[]): void {
@@ -223,6 +270,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     tally = { allow: 0, deny: 0, defer: 0 }
     contextFiles = []
     recorder.start(ctx.sessionManager)
+    manual.start(ctx)
     generation = createGeneration(ctx, result.config)
     renderStatus(generation)
     investigationStatus = undefined
@@ -269,7 +317,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   // Pi loads a project's AGENTS.md and CLAUDE.md whether or not it trusts the project, and a cloned repository
   // could use them to vouch for its own actions
   pi.on('before_agent_start', (event, ctx) => {
-    generation?.resetTurn()
+    generation?.reviewer.resetTurn()
     const agentDir = resolve(getAgentDir())
     const projectTrusted = ctx.isProjectTrusted()
     contextFiles = (event.systemPromptOptions.contextFiles ?? []).filter(
@@ -280,7 +328,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   // Pi starts a turn before every model response, but Codex counts denials across everything the agent does for one
   // prompt. Retries and continuations start turns without `before_agent_start`
   pi.on('agent_settled', () => {
-    generation?.resetTurn()
+    generation?.reviewer.resetTurn()
   })
 
   const cancelReviews = (): void => {
@@ -289,6 +337,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     }
     generation.history.controller.abort()
     generation.history.controller = new AbortController()
+    manual.invalidate()
   }
   pi.on('session_tree', cancelReviews)
   pi.on('session_compact', cancelReviews)
@@ -304,6 +353,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     const { promise: waited, resolve: stopWaiting } = Promise.withResolvers<void>()
     setTimeout(stopWaiting, SHUTDOWN_WAIT_MS).unref()
     await Promise.race([Promise.allSettled([...outstanding]), waited])
+    manual.stop()
     recorder.close()
   })
 
@@ -312,5 +362,6 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     registered: generation?.dispose !== undefined,
     config: generation?.config,
     investigation: investigationStatus,
+    circuitOpen: generation?.reviewer.circuitOpen() ?? false,
   }))
 }
