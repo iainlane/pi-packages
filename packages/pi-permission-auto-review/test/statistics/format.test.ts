@@ -30,7 +30,7 @@ function overviewRows(sessionCost = 'USD 0.012345', globalCost = 'USD 0.004100')
   )
 }
 
-const HEADER = ['Auto-review', 'Model: openai-codex/codex-auto-review', 'Investigation: available', '']
+const HEADER = ['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: available', '']
 const STARTED = ['', 'Global totals started 3 Nov 2026, 09:00 UTC']
 const FOOTER = ['', 'Details: /auto-stats details']
 

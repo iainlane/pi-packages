@@ -58,8 +58,10 @@ Then add the reviewer to pi-permission-system's authorizer chain, normally in
 }
 ```
 
-The `codex` preset uses Pi's `openai-codex` login, listed as "OpenAI Codex
-(legacy)" in `/login`; the `claude-code` preset needs an `anthropic` login.
+The `codex` preset uses Pi's `openai` provider. Run `/login openai` and choose
+"Sign in with ChatGPT" to use a ChatGPT subscription. An explicit
+`"provider": "openai-codex"` configuration still uses the separate Codex login.
+The `claude-code` preset needs an `anthropic` login.
 
 The reviewer only sees the asks that your pi-permission-system rules send to
 it. Claude Code approves most reads and edits inside the project without its

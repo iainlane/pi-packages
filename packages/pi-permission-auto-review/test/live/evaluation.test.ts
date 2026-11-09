@@ -40,7 +40,7 @@ describe('live evaluation controls', () => {
 
   it('uses the production reviewer default with a bounded request count', () => {
     expect(evaluationOptions({ PI_AUTO_REVIEW_LIVE: '1' })).toStrictEqual({
-      provider: 'openai-codex',
+      provider: 'openai',
       model: 'codex-auto-review',
       maxRequests: 12,
       timeoutMs: 90_000,

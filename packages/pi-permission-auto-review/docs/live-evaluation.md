@@ -20,7 +20,7 @@ an investigation command.
 | Environment variable               | Default             | Accepted values                     |
 | ---------------------------------- | ------------------- | ----------------------------------- |
 | `PI_AUTO_REVIEW_LIVE`              | unset               | Exactly `1` to enable live requests |
-| `PI_AUTO_REVIEW_LIVE_PROVIDER`     | `openai-codex`      | A provider ID                       |
+| `PI_AUTO_REVIEW_LIVE_PROVIDER`     | `openai`            | A provider ID                       |
 | `PI_AUTO_REVIEW_LIVE_MODEL`        | `codex-auto-review` | A model ID                          |
 | `PI_AUTO_REVIEW_LIVE_MAX_REQUESTS` | `12`                | An integer from 1 to 30             |
 | `PI_AUTO_REVIEW_LIVE_TIMEOUT_MS`   | `90000`             | An integer from 1 to 300000         |

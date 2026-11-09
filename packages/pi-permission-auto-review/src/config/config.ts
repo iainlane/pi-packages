@@ -2,7 +2,7 @@ import { toJsonSchema } from '@valibot/to-json-schema'
 import * as v from 'valibot'
 
 export const EXTENSION_ID = 'pi-permission-auto-review'
-export const CODEX_PROVIDER = 'openai-codex'
+export const CODEX_PROVIDER = 'openai'
 export const CODEX_AUTO_REVIEW_MODEL = 'codex-auto-review'
 const MAX_TIMEOUT_MS = 300_000
 export const CONFIG_SCHEMA_URL =

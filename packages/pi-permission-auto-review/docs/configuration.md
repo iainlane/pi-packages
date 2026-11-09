@@ -1,7 +1,9 @@
 # Configuration
 
 Configuration is optional. Without it, the `codex` preset reviews with
-`openai-codex/codex-auto-review`.
+`openai/codex-auto-review`. If your configuration explicitly sets
+`"provider": "openai-codex"`, change that value to `"openai"` to use the new
+default provider, then authenticate with `/login openai`.
 
 ## Files
 
@@ -24,7 +26,7 @@ editors use to validate the file.
 | Field              | Default (`codex` / `claude-code`)       | Description                                                   |
 | ------------------ | --------------------------------------- | ------------------------------------------------------------- |
 | `preset`           | `codex`                                 | `codex` or `claude-code`                                      |
-| `provider`         | `openai-codex` / `anthropic`            | Pi provider id of the reviewer model                          |
+| `provider`         | `openai` / `anthropic`                  | Pi provider id of the reviewer model                          |
 | `model`            | `codex-auto-review` / `claude-sonnet-5` | Reviewer model id                                             |
 | `reasoning`        | `low` / `high`                          | Reasoning level; `claude-code` uses it for its second stage   |
 | `timeoutMs`        | `90000`                                 | Time for a whole review, retries included                     |

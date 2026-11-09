@@ -5,7 +5,7 @@ import { buildJsonSchema, mergeConfig } from '../../src/config/config.js'
 it('fills provider, model and reasoning from the preset, unless a file sets them', () => {
   expect(mergeConfig({}, {})).toMatchObject({
     preset: 'codex',
-    provider: 'openai-codex',
+    provider: 'openai',
     model: 'codex-auto-review',
     reasoning: 'low',
   })

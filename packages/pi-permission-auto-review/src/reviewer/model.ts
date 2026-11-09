@@ -18,9 +18,12 @@ export type ResolveReviewModelResult =
   | { ok: true; value: Model<Api>; derived: boolean }
   | { ok: false; category: 'provider-unresolved' | 'model-unresolved' }
 
-const CODEX_API = 'openai-codex-responses'
+const CODEX_APIS = new Map<string, Api>([
+  [CODEX_PROVIDER, 'openai-responses'],
+  ['openai-codex', 'openai-codex-responses'],
+])
 
-/** `codex-auto-review` is hidden from the registry, so it is derived from another model of the Codex provider */
+/** `codex-auto-review` is hidden from the registry, so it is derived from another model of the selected provider */
 export function resolveReviewModel(
   registry: Pick<ReviewModelRegistry, 'getProvider' | 'getAll' | 'find'>,
   config: AutoReviewConfig,
@@ -33,13 +36,13 @@ export function resolveReviewModel(
   if (registered !== undefined) {
     return { ok: true, value: registered, derived: false }
   }
-  if (config.provider !== CODEX_PROVIDER || config.model !== CODEX_AUTO_REVIEW_MODEL) {
+  const api = CODEX_APIS.get(config.provider)
+  if (api === undefined || config.model !== CODEX_AUTO_REVIEW_MODEL) {
     return { ok: false, category: 'model-unresolved' }
   }
 
-  const template =
-    registry.getAll().find(model => model.provider === CODEX_PROVIDER && model.api === CODEX_API) ??
-    provider.getModels().find(model => model.api === CODEX_API)
+  const matches = (model: Model<Api>): boolean => model.provider === config.provider && model.api === api
+  const template = registry.getAll().find(matches) ?? provider.getModels().find(matches)
 
   return template === undefined
     ? { ok: false, category: 'model-unresolved' }

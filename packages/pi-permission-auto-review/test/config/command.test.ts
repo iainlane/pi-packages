@@ -83,7 +83,7 @@ describe('/permission-auto-review', () => {
     })
     await harness.run('')
 
-    expect(harness.menus[0]).toContain('Provider: openai-codex (source: default; global: inherit)')
+    expect(harness.menus[0]).toContain('Provider: openai (source: default; global: inherit)')
     expect(harness.menus[1]).toContain('Provider: review-proxy (source: global; global: override)')
     expect(stored('global')).toMatchObject({ provider: 'review-proxy' })
     expect(harness.applyConfig).toHaveBeenCalledOnce()
