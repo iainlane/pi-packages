@@ -46,7 +46,7 @@ export interface ReviewerRuntime {
   contextFiles: () => readonly ContextFile[]
   /** Aborted when the reviewer is replaced, the session ends or the session moves to other history; read at every review */
   sessionSignal: AbortSignal
-  /** The session's sandbox for inspecting local state, for presets that investigate */
+  /** Reports whether a review route exists and opens a copy on the first investigation call of each review */
   investigation?: Pick<Investigation, 'availability' | 'forReview'>
   /** Receives every verdict with the calls behind it */
   statistics?: ReviewStatistics
@@ -135,21 +135,12 @@ async function reviewCurrentEvidence(
   }
 }
 
-/** The tools for this review, when the session's sandbox meets the requirements */
-async function startInvestigation(
-  investigation: NonNullable<ReviewerRuntime['investigation']>,
-  signal: AbortSignal,
-): Promise<InvestigationRun | undefined> {
-  const availability = await investigation.availability()
-
-  return availability.available ? investigation.forReview(signal) : undefined
-}
-
 async function runReview(
   runtime: ReviewerRuntime,
   preset: Preset,
   details: PromptPermissionDetails,
   conversation: ReviewConversation | undefined,
+  log: AuthorizerLog,
 ): Promise<ReviewResult> {
   const { config, context } = runtime
   const deadline = Date.now() + config.timeoutMs
@@ -162,6 +153,7 @@ async function runReview(
     ...(turnSignal === undefined ? [] : [turnSignal]),
   ])
 
+  let investigation: InvestigationRun | undefined
   try {
     if (signal.aborted) {
       return { kind: 'failed', failure: 'cancelled' }
@@ -174,10 +166,16 @@ async function runReview(
     const usage = { input: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, output: 0 }
     const { statistics } = runtime
     const calls = statistics === undefined ? undefined : new CallLog(late => statistics.late(late), resolved.derived)
-    const investigation =
-      preset.investigates && runtime.investigation !== undefined
-        ? await startInvestigation(runtime.investigation, signal)
-        : undefined
+    let unavailable: string | undefined
+    if (preset.investigates && runtime.investigation !== undefined) {
+      const status = await runtime.investigation.availability()
+      if (status.available) {
+        investigation = runtime.investigation.forReview(signal, details)
+        unavailable = investigation.unavailableReason
+      } else {
+        unavailable = status.reason
+      }
+    }
     const complete = createModelCall({
       registry: context.modelRegistry,
       model,
@@ -187,22 +185,27 @@ async function runReview(
       timeoutSignal: timeoutController.signal,
       deadline,
       usage,
-      investigation,
+      investigation: unavailable === undefined ? investigation : undefined,
       calls,
     })
     const outcome = await reviewCurrentEvidence(runtime, preset, details, conversation, {
       complete,
       contextWindow: model.contextWindow,
-      investigation: investigation !== undefined,
+      investigation: investigation !== undefined && unavailable === undefined,
     })
     const investigated =
       investigation === undefined || investigation.calls === 0
         ? {}
         : { investigationCalls: investigation.calls, investigationBytes: investigation.bytes }
 
+    const unavailableReason = investigation?.unavailableReason ?? unavailable
     return {
       ...outcome,
-      fields: { ...outcome.fields, ...investigated },
+      fields: {
+        ...outcome.fields,
+        ...investigated,
+        ...(unavailableReason !== undefined && { investigationUnavailable: unavailableReason }),
+      },
       usage,
       calls,
       investigationCalls: investigation?.calls ?? 0,
@@ -210,6 +213,19 @@ async function runReview(
     }
   } finally {
     clearTimeout(timeout)
+    const cleanup = await investigation?.close()
+    if (cleanup !== undefined) {
+      log.review('auto_review.copy_cleanup', { requestId: details.requestId, failure: cleanup.failure })
+      if (cleanup.failure === 'timed-out') {
+        void cleanup.late.then(outcome => {
+          log.review('auto_review.copy_cleanup', {
+            requestId: details.requestId,
+            late: true,
+            ...(outcome === 'not-opened' ? { opened: false } : { confirmed: outcome === 'confirmed' }),
+          })
+        })
+      }
+    }
   }
 }
 
@@ -299,7 +315,7 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         return refuseOpenCircuit(refusal)
       }
 
-      const result = await runReview(runtime, preset, details, conversation)
+      const result = await runReview(runtime, preset, details, conversation, log)
       // Another review tripped the circuit while this one ran
       const lateRefusal = limiter.refusal()
       if (lateRefusal !== undefined) {

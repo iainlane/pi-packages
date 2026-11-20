@@ -90,6 +90,10 @@ export function prepareReview<T>(
 
 /** In `auto`, a follow-up served without a cache hit ends the conversation, which an uncached provider would resend whole */
 export function nextConversation(config: AutoReviewConfig, review: FinishedReview): ReviewConversation | undefined {
+  if (review.request.messages.some(message => message.role === 'toolResult')) {
+    return undefined
+  }
+
   const continues =
     config.followUpReviews === 'always' ||
     (config.followUpReviews === 'auto' && (review.priorReviews === 0 || review.firstReply.usage.cacheRead > 0))

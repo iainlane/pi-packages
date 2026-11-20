@@ -126,14 +126,17 @@ tokens, oldest first. If that is not enough, the ask comes to you.
 
 ## Investigation
 
-With the `codex` preset, the reviewer can check local facts before it decides,
-such as a file's contents or where a repository's remote points, by running
-read-only commands in the sandbox that you configured with
-[pi-bring-your-own-sandbox][investigation]. The SDK is included, but you must
-load a provider extension separately. Investigation needs a backend that cannot
-write files or reach the network. When your sandbox cannot provide one, which
-includes the default of running on the host, the reviewer judges from the
-transcript alone and the footer shows `no investigation` with the reason.
+With the `codex` preset, the reviewer can inspect a read-only copy of the
+proposed command's workspace. Load a [BYOS provider and shell routing
+extension][investigation] before the permission gate. The first investigation
+call opens the copy. Later calls in that review see the same files. The
+reviewer closes the copy when it finishes. Networking is denied.
+
+A command in a private Docker workspace is reviewed against the edits in that
+workspace. A command routed to the host is reviewed against the host checkout.
+BYOS supplies routes for its Bash and PowerShell tools. The reviewer uses the
+transcript for native file tools and other unrouted calls. A failed copy also
+falls back to the transcript. The decision log records the reason.
 
 [investigation]: docs/codex-parity.md#investigation
 

@@ -1,24 +1,27 @@
+import type { ProposedTool, ReviewRoutes } from './review-route.js'
 import type { Tool, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
 import type {
   ProcessResult,
   Sandbox,
-  SandboxAcquireOptions,
   SandboxContext,
+  SandboxCopyOptions,
   SandboxHost,
-  SandboxNegotiation,
+  ShellReviewSource,
 } from 'pi-bring-your-own-sandbox/api'
 import { Buffer } from 'node:buffer'
 import { isAbsolute, posix, relative, sep } from 'node:path'
-import {
-  getSandbox,
-  isSandboxError,
-  negotiateSandbox,
-  UnsupportedSandboxCapabilityError,
-  UnsupportedSandboxPolicyError,
-} from 'pi-bring-your-own-sandbox/api'
+import { isSandboxError } from 'pi-bring-your-own-sandbox/api'
 import { Type } from 'typebox'
 import * as v from 'valibot'
+import { reviewRoutes } from './review-route.js'
 
+type ReleaseOutcome = 'confirmed' | 'unconfirmed' | 'not-opened'
+
+type CleanupFailure =
+  | { readonly failure: 'unconfirmed' }
+  | { readonly failure: 'timed-out'; readonly late: Promise<ReleaseOutcome> }
+
+const CLEANUP_TIMEOUT_MS = 10_000
 const CALL_TIMEOUT_MS = 10_000
 const OUTPUT_LIMIT_BYTES = 32 * 1024
 const READ_LIMIT_BYTES = 8 * 1024 * 1024
@@ -30,26 +33,16 @@ const BUDGET_EXHAUSTED = 'Not run: the investigation budget for this review is e
 // Codex infers a refusal from a failed command whose own output reports a denial. The word "sandbox" alone also
 // appears in ordinary errors, so it does not count
 const REFUSAL = /operation not permitted|permission denied|read-only file system/i
-
-/** What the reviewer needs from the user's sandbox: no writes, no network, and nothing outside the workspace */
-export const INVESTIGATION_REQUIREMENTS: SandboxAcquireOptions = {
-  policy: { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' },
+// Leave out `no-host-system-files`: native providers need system files to start a shell. BYOS still gives the copy the
+// strictest filesystem scope that the provider supports
+const COPY_REQUIREMENTS = {
+  guarantees: ['no-workspace-writes', 'no-network', 'no-host-user-data'],
   capabilities: ['exec', 'files.read'],
-  processKinds: ['shell'],
   shells: ['sh'],
+  processKinds: ['shell'],
   exitStatus: 'guaranteed',
   terminationScope: 'process-group',
-}
-
-/** The BYOS client functions that investigation calls */
-export interface SandboxAccess {
-  negotiateSandbox: (
-    pi: SandboxHost,
-    context: SandboxContext,
-    options: SandboxAcquireOptions,
-  ) => Promise<SandboxNegotiation>
-  getSandbox: (pi: SandboxHost, context: SandboxContext, options: SandboxAcquireOptions) => Promise<Sandbox>
-}
+} as const satisfies SandboxCopyOptions
 
 export type InvestigationAvailability = { available: true } | { available: false; reason: string }
 
@@ -127,18 +120,6 @@ function shellOutcome(result: ProcessResult): CallOutcome {
   }
 }
 
-async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted()
-  const { promise: aborted, reject } = Promise.withResolvers<never>()
-  const onAbort = (): void => reject(signal.reason)
-  signal.addEventListener('abort', onAbort, { once: true })
-  try {
-    return await Promise.race([promise, aborted])
-  } finally {
-    signal.removeEventListener('abort', onAbort)
-  }
-}
-
 /** The model reads host paths in the transcript; one inside the host workspace refers to the target's workspace */
 function targetPath(sandbox: Sandbox, cwd: string, path: string): string {
   if (!isAbsolute(path)) {
@@ -185,91 +166,84 @@ async function readText(
   return { text: selected, isError: false, bytes: Buffer.byteLength(selected) }
 }
 
-/**
- * Investigation for one session: whether the user's sandbox can meet the requirements, and the sandbox itself, which
- * opens at the first tool call
- */
 export class Investigation {
-  private readonly pi: SandboxHost
-  private readonly access: SandboxAccess
   private context: SandboxContext | undefined
-  private negotiation: Promise<InvestigationAvailability> = Promise.resolve({
-    available: false,
-    reason: 'the session has not started',
-  })
-  private sandbox: Promise<Sandbox> | undefined
-  private disabled: string | undefined
 
-  constructor(pi: SandboxHost, access: SandboxAccess = { negotiateSandbox, getSandbox }) {
+  private readonly pi: SandboxHost
+  private readonly routes: ReviewRoutes
+
+  constructor(pi: SandboxHost, routes: ReviewRoutes = reviewRoutes) {
     this.pi = pi
-    this.access = access
+    this.routes = routes
   }
 
-  /** Negotiates with the session's sandbox provider; nothing is opened until a review calls a tool */
   start(context: SandboxContext): void {
     this.context = context
-    this.sandbox = undefined
-    this.disabled = undefined
-    this.negotiation = this.access.negotiateSandbox(this.pi, context, INVESTIGATION_REQUIREMENTS).then(
-      (negotiation): InvestigationAvailability =>
-        negotiation.ok ? { available: true } : { available: false, reason: describeError(negotiation.error) },
-      (error: unknown): InvestigationAvailability => ({ available: false, reason: describeError(error) }),
-    )
   }
 
   async availability(): Promise<InvestigationAvailability> {
-    if (this.disabled !== undefined) {
-      return { available: false, reason: this.disabled }
-    }
-
-    return this.negotiation
+    const available = this.context !== undefined && this.routes.available(this.pi)
+    return Promise.resolve(
+      available ? { available: true } : { available: false, reason: 'no tool route provides review copies' },
+    )
   }
 
-  forReview(signal: AbortSignal): InvestigationRun {
-    return new InvestigationRun(signal, async () => this.acquire(signal))
-  }
-
-  /** The session's sandbox, or why this review, or every later one, cannot use it */
-  private async acquire(signal: AbortSignal): Promise<{ sandbox: Sandbox; cwd: string } | { unavailable: string }> {
+  forReview(signal: AbortSignal, tool: ProposedTool): InvestigationRun {
     const context = this.context
-    if (context === undefined || this.disabled !== undefined) {
-      return { unavailable: this.disabled ?? 'the session has not started' }
-    }
-    // Shared by every review, so a review's cancellation stops waiting without ending the acquisition
-    this.sandbox ??= this.access.getSandbox(this.pi, context, INVESTIGATION_REQUIREMENTS)
-    try {
-      return { sandbox: await raceAbort(this.sandbox, signal), cwd: context.cwd }
-    } catch (error) {
-      if (signal.aborted) {
-        throw error
-      }
-      this.sandbox = undefined
-      const reason = describeError(error)
-      if (
-        isSandboxError(error, UnsupportedSandboxPolicyError) ||
-        isSandboxError(error, UnsupportedSandboxCapabilityError)
-      ) {
-        this.disabled = reason
-      }
-
-      return { unavailable: reason }
-    }
+    const source = context === undefined ? undefined : this.routes.resolve(this.pi, context, tool)
+    return new InvestigationRun(signal, context?.cwd ?? '', source)
   }
 }
 
 /** One review's tool calls, within its budget of calls and output */
 export class InvestigationRun {
   readonly tools: Tool[] = TOOLS
-  private readonly signal: AbortSignal
-  private readonly acquire: () => Promise<{ sandbox: Sandbox; cwd: string } | { unavailable: string }>
+  private pending: ReturnType<ShellReviewSource['copy']> | undefined
+  private closing: Promise<CleanupFailure | undefined> | undefined
   private callCount = 0
   private refusalCount = 0
   private outputBytes = 0
-  private unavailable = false
+  unavailableReason: string | undefined
 
-  constructor(signal: AbortSignal, acquire: InvestigationRun['acquire']) {
-    this.signal = signal
-    this.acquire = acquire
+  private readonly signal: AbortSignal
+  private readonly life = new AbortController()
+  private readonly cwd: string
+  private readonly source: ShellReviewSource | undefined
+
+  constructor(signal: AbortSignal, cwd: string, source: ShellReviewSource | undefined) {
+    this.signal = AbortSignal.any([signal, this.life.signal])
+    this.cwd = cwd
+    this.source = source
+    if (source === undefined) {
+      this.unavailableReason = 'the proposed execution destination could not be established'
+    }
+  }
+
+  async close(): Promise<CleanupFailure | undefined> {
+    this.life.abort()
+    this.closing ??= this.release()
+    return this.closing
+  }
+
+  private async release(): Promise<CleanupFailure | undefined> {
+    if (this.pending === undefined) return undefined
+
+    const release: Promise<ReleaseOutcome> = this.pending
+      .then(
+        async copy => ((await copy.close()).confirmed ? ('confirmed' as const) : ('unconfirmed' as const)),
+        () => 'not-opened' as const,
+      )
+      .catch(() => 'unconfirmed' as const)
+    const deadline = Promise.withResolvers<'timed-out'>()
+    const timer = setTimeout(() => deadline.resolve('timed-out'), CLEANUP_TIMEOUT_MS)
+    try {
+      const outcome = await Promise.race([release, deadline.promise])
+      if (outcome === 'timed-out') return { failure: outcome, late: release }
+      if (outcome === 'unconfirmed') return { failure: outcome }
+      return undefined
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   get calls(): number {
@@ -286,7 +260,7 @@ export class InvestigationRun {
 
   /** Whether the review has used its budget or lost its sandbox, so the reviewer must decide without more calls */
   get exhausted(): boolean {
-    return this.unavailable || this.callCount >= MAX_CALLS || this.outputBytes >= MAX_OUTPUT_BYTES
+    return this.unavailableReason !== undefined || this.callCount >= MAX_CALLS || this.outputBytes >= MAX_OUTPUT_BYTES
   }
 
   /** Answers every call, since a provider rejects a request that leaves a tool call unanswered */
@@ -313,14 +287,21 @@ export class InvestigationRun {
       return { text: `Invalid arguments for ${call.name}.`, isError: true, bytes: 0 }
     }
     this.callCount += 1
-    const acquired = await this.acquire()
-    if ('unavailable' in acquired) {
-      this.unavailable = true
-
-      return { text: `Investigation is unavailable: ${acquired.unavailable}`, isError: true, bytes: 0 }
+    let sandbox: Sandbox
+    try {
+      this.signal.throwIfAborted()
+      if (this.source === undefined) {
+        throw new Error('The proposed execution destination is unavailable.')
+      }
+      this.pending ??= this.source.copy({ ...COPY_REQUIREMENTS, signal: this.signal })
+      const copy = await this.pending
+      this.signal.throwIfAborted()
+      sandbox = copy.sandbox
+    } catch (error) {
+      this.signal.throwIfAborted()
+      this.unavailableReason = describeError(error)
+      return { text: `Investigation is unavailable: ${this.unavailableReason}`, isError: true, bytes: 0 }
     }
-
-    const { sandbox, cwd } = acquired
     const options = { signal: this.signal, timeoutMs: CALL_TIMEOUT_MS }
     let outcome: CallOutcome
     try {
@@ -330,7 +311,7 @@ export class InvestigationRun {
         outcome = shellOutcome(await sandbox.exec(request, { ...options, maxCaptureBytes: OUTPUT_LIMIT_BYTES }))
       } else {
         const range = output.arguments
-        outcome = await readText(sandbox, targetPath(sandbox, cwd, range.path), range, options)
+        outcome = await readText(sandbox, targetPath(sandbox, this.cwd, range.path), range, options)
       }
     } catch (error) {
       if (this.signal.aborted) {

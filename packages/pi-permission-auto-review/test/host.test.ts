@@ -1,7 +1,7 @@
 import type { AssistantMessage, Context, ToolCall } from '@earendil-works/pi-ai'
-import type { AgentSession, ExtensionFactory, ToolInfo } from '@earendil-works/pi-coding-agent'
+import type { AgentSession, ExtensionFactory, InlineExtension, ToolInfo } from '@earendil-works/pi-coding-agent'
 import type { PermissionState, PermissionsReadyEvent, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
-import type { ProcessRequest, SandboxPolicy, SandboxProvider } from 'pi-bring-your-own-sandbox/api'
+import type { ProcessRequest, SandboxBackend, SandboxPolicy, SandboxProvider } from 'pi-bring-your-own-sandbox/api'
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
@@ -19,12 +19,13 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { getPermissionsService, PERMISSIONS_READY_CHANNEL } from '@gotgenes/pi-permission-system'
 import { registerSandboxProvider } from 'pi-bring-your-own-sandbox/api'
+import sandboxTools from 'pi-bring-your-own-sandbox/pi-tools'
 import { Type } from 'typebox'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { inputDigest, projectSdkJson } from '../src/action/json.js'
 import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
-import { useWorkspace, writeFile } from './helpers.js'
+import { reviewWorkspace, useWorkspace, writeFile } from './helpers.js'
 
 // pi-permission-system ships TypeScript with extensionless imports, which only Pi's jiti loader resolves.
 const permissionModulePath = fileURLToPath(
@@ -64,6 +65,8 @@ interface HostOptions {
   reviewerReplies?: ((context: Context) => AssistantMessage)[]
   /** Receives a copy of every request that the reviewer model gets */
   reviewerRequests?: Context[]
+  reviewRoute?: ExtensionFactory
+  /** A BYOS provider to activate with this base policy, loaded with the BYOS shell tools before the permission gate */
   sandbox?: { provider: SandboxProvider<unknown>; policy: SandboxPolicy }
   /** The main model's replies after the first call, given each request; overrides `successiveCalls` */
   followUps?: ((context: Context) => AssistantMessage)[]
@@ -72,59 +75,79 @@ interface HostOptions {
   confirm?: (title: string, message: string) => Promise<boolean>
 }
 
-/** A provider that runs nothing and records what it was asked to open and run */
-function recordingProvider(record: {
-  policies: SandboxPolicy[]
+interface Allocation {
+  kind: 'open' | 'copy'
+  source?: string
+  policy: SandboxPolicy
   requests: ProcessRequest[]
-}): SandboxProvider<unknown> {
+}
+
+/** A provider that records each backend allocation, including its policy and the commands run in it */
+function copyingProvider(
+  filesystemScope: readonly SandboxPolicy['filesystemScope'][],
+  allocations: Allocation[],
+): SandboxProvider<unknown> {
   const capabilities = {
     processKinds: ['shell'],
     terminationScope: 'process-group',
     exitStatus: 'guaranteed',
-    operations: ['exec'],
-    shells: ['sh'],
+    operations: ['exec', 'files.read', 'copy'],
+    shells: ['sh', 'bash'],
   } as const
+  const backend = (allocation: Allocation, relationship: 'remote' | 'copied'): SandboxBackend => {
+    allocations.push(allocation)
 
-  return {
-    id: 'fixture.recording',
-    label: 'Recording fixture',
-    protocolVersion: 1,
-    capabilities: { ...capabilities, operations: ['exec', 'files.read'] },
-    policies: {
-      workspaceAccess: ['read-only', 'read-write'],
-      filesystemScope: ['workspace-only'],
-      networkAccess: ['denied'],
-    },
-    validateConfig: () => undefined,
-    async open(request, context) {
-      context.reportRecovery({ kind: 'none' })
-      record.policies.push(request.policy)
-      const files = {
+    return {
+      id: `backend-${allocations.length}`,
+      workspace: { root: '/workspace', pathFlavor: 'posix', relationship, description: 'Fixture.' },
+      capabilities,
+      policy: allocation.policy,
+      policyDescription: 'Fixture only; no isolation.',
+      recovery: { kind: 'none' },
+      files: {
         read: {
           readFile: async () => new Uint8Array(),
           access: async () => {},
           stat: async () => ({ kind: 'file', size: 0 }) as const,
         },
-      }
+      },
+      exec: async (request, operation) => {
+        allocation.requests.push(request)
+        operation.onOutput({ stream: 'stdout', data: new TextEncoder().encode('fixture output\n') })
 
-      return {
-        id: `backend-${record.policies.length}`,
-        workspace: { root: '/workspace', pathFlavor: 'posix', relationship: 'remote', description: 'Fixture.' },
-        capabilities: { ...capabilities, operations: ['exec', 'files.read'] },
-        policy: request.policy,
-        policyDescription: 'Fixture only; no isolation.',
-        recovery: { kind: 'none' },
-        files,
-        exec: async (processRequest, operation) => {
-          record.requests.push(processRequest)
-          operation.onOutput({ stream: 'stdout', data: new TextEncoder().encode('fixture output\n') })
+        return { kind: 'exited', exit: { kind: 'code', code: 0 } }
+      },
+      dispose: async () => {},
+    }
+  }
 
-          return { kind: 'exited', exit: { kind: 'code', code: 0 } }
-        },
-        dispose: async () => {},
-      }
+  return {
+    id: 'fixture.copying',
+    label: 'Copying fixture',
+    protocolVersion: 1,
+    capabilities,
+    policies: {
+      workspaceRelationship: ['remote'],
+      workspaceAccess: ['read-only', 'read-write'],
+      filesystemScope,
+      networkAccess: ['denied'],
+    },
+    validateConfig: () => undefined,
+    async open(request, context) {
+      context.reportRecovery({ kind: 'none' })
+
+      return backend({ kind: 'open', policy: request.policy, requests: [] }, 'remote')
+    },
+    async copy(request, context) {
+      context.reportRecovery({ kind: 'none' })
+
+      return backend({ kind: 'copy', source: request.source.kind, policy: request.policy, requests: [] }, 'copied')
     },
   }
+}
+
+function hasRouteReply(payload: unknown): payload is { reply: (open?: unknown) => void } {
+  return typeof payload === 'object' && payload !== null && 'reply' in payload && typeof payload.reply === 'function'
 }
 
 interface ReviewEvidence {
@@ -278,6 +301,7 @@ describe('auto-review in the Pi host', () => {
     interrupted = false,
     reviewerReplies,
     reviewerRequests = [],
+    reviewRoute,
     sandbox,
     followUps,
     results,
@@ -375,19 +399,26 @@ describe('auto-review in the Pi host', () => {
         }
       })
     }
-    const extensionFactories =
+    const extensionFactories: InlineExtension[] =
       reviewPosition === 'before'
         ? [spyRegistration, permissionAutoReview, permissionSystem, observe, createCodemodeExtension()]
         : [spyRegistration, permissionSystem, observe, permissionAutoReview, createCodemodeExtension()]
     if (extensionFactory !== undefined) {
       extensionFactories.push(extensionFactory)
     }
+    if (reviewRoute !== undefined) {
+      extensionFactories.unshift(reviewRoute)
+    }
     if (sandbox !== undefined) {
-      extensionFactories.push(pi =>
-        registerSandboxProvider(pi, sandbox.provider, {
-          configure: () => ({ configuration: {}, policy: sandbox.policy }),
-        }),
-      )
+      extensionFactories.unshift({
+        name: 'shell',
+        factory: pi => {
+          registerSandboxProvider(pi, sandbox.provider, {
+            configure: () => ({ configuration: {}, policy: sandbox.policy }),
+          })
+          sandboxTools(pi, '<inline:shell>')
+        },
+      })
     }
     if (probePosition === 'before') {
       extensionFactories.unshift(probe)
@@ -720,15 +751,59 @@ describe('auto-review in the Pi host', () => {
     })
   })
 
-  it('investigates through a read-only backend of the configured sandbox, whose own policy allows writes', async () => {
-    const record = { policies: [] as SandboxPolicy[], requests: [] as ProcessRequest[] }
+  it('copies the destination of the pending permission request and closes the copy before returning the verdict', async () => {
+    const calls: (ProcessRequest | string)[] = []
+    const copies: unknown[] = []
+    const expected: { sessionId: string; toolName: string; toolCallId: string }[] = []
+    const actual: unknown[] = []
     const reviewerRequests: Context[] = []
     await runHost({
       reviewerRequests,
       call: fauxToolCall('bash', { command: 'printf ok > executed.txt' }, { id: 'investigated' }),
-      sandbox: {
-        provider: recordingProvider(record),
-        policy: { workspaceAccess: 'read-write', filesystemScope: 'workspace-only', networkAccess: 'denied' },
+      reviewRoute(pi) {
+        pi.on('tool_call', (event, context) => {
+          expected.push({
+            sessionId: context.sessionManager.getSessionId(),
+            toolName: event.toolName,
+            toolCallId: event.toolCallId,
+          })
+        })
+        pi.events.on('pi-byos:review:tool-call:v2', payload => {
+          if (!hasRouteReply(payload)) {
+            return
+          }
+          if ('kind' in payload && payload.kind === 'available') {
+            payload.reply()
+            return
+          }
+          const { reply, ...identity } = payload
+          actual.push(identity)
+          reply({
+            copy: async (options: unknown) => {
+              calls.push('copy')
+              copies.push(options)
+              return {
+                sandbox: {
+                  ...reviewWorkspace,
+                  exec: async (request: ProcessRequest) => {
+                    calls.push(request)
+                    return {
+                      exit: { kind: 'code', code: 0 },
+                      stdout: new TextEncoder().encode('fixture output'),
+                      stderr: new Uint8Array(),
+                      omittedBytes: { stdout: 0, stderr: 0 },
+                      durationMs: 1,
+                    }
+                  },
+                },
+                close: async () => {
+                  calls.push('close')
+                  return { confirmed: true }
+                },
+              }
+            },
+          })
+        })
       },
       reviewerReplies: [
         () => fauxAssistantMessage([fauxToolCall('shell', { command: 'git remote -v' })], { stopReason: 'toolUse' }),
@@ -736,14 +811,26 @@ describe('auto-review in the Pi host', () => {
       ],
     })
 
+    expect(actual).toStrictEqual(expected)
     expect({
-      policies: record.policies,
-      requests: record.requests,
+      calls,
+      copies,
       tools: reviewerRequests.map(context => getCurrentTools(context.messages).map(tool => tool.name)),
       output: JSON.stringify(reviewerRequests[1]?.messages.at(-1)),
     }).toStrictEqual({
-      policies: [{ workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' }],
-      requests: [{ kind: 'shell', command: 'git remote -v', dialect: 'sh' }],
+      calls: ['copy', { kind: 'shell', command: 'git remote -v', dialect: 'sh' }, 'close'],
+      copies: [
+        {
+          guarantees: ['no-workspace-writes', 'no-network', 'no-host-user-data'],
+          capabilities: ['exec', 'files.read'],
+          shells: ['sh'],
+          processKinds: ['shell'],
+          exitStatus: 'guaranteed',
+          terminationScope: 'process-group',
+          signal: expect.any(AbortSignal) as unknown,
+          timeoutMs: undefined,
+        },
+      ],
       tools: [
         ['shell', 'read'],
         ['shell', 'read'],
@@ -751,6 +838,61 @@ describe('auto-review in the Pi host', () => {
       output: expect.stringContaining('fixture output') as unknown,
     })
   })
+
+  it.each([
+    { supported: ['system-read-only'], scope: 'system-read-only' },
+    { supported: ['system-read-only', 'workspace-only'], scope: 'workspace-only' },
+  ] as const)(
+    'investigates in a read-only copy with $scope access from a provider that supports $supported',
+    async ({ supported, scope }) => {
+      const allocations: Allocation[] = []
+      const reviewerRequests: Context[] = []
+      const policy = {
+        workspaceAccess: 'read-write',
+        filesystemScope: 'system-read-only',
+        networkAccess: 'denied',
+      } as const
+      await runHost({
+        reviewerRequests,
+        call: fauxToolCall('bash', { command: 'printf ok > executed.txt' }, { id: 'investigated' }),
+        sandbox: { provider: copyingProvider(supported, allocations), policy },
+        reviewerReplies: [
+          () => fauxAssistantMessage([fauxToolCall('shell', { command: 'git remote -v' })], { stopReason: 'toolUse' }),
+          () => fauxAssistantMessage(fauxText('{"outcome":"allow"}')),
+        ],
+      })
+
+      expect({
+        allocations,
+        tools: reviewerRequests.map(context => getCurrentTools(context.messages).map(tool => tool.name)),
+        output: JSON.stringify(reviewerRequests[1]?.messages.at(-1)),
+      }).toStrictEqual({
+        allocations: [
+          {
+            kind: 'open',
+            policy,
+            requests: [{ kind: 'shell', command: 'printf ok > executed.txt', cwd: '/workspace', dialect: 'bash' }],
+          },
+          {
+            kind: 'copy',
+            source: 'backend',
+            policy: {
+              workspaceAccess: 'read-only',
+              filesystemScope: scope,
+              networkAccess: 'denied',
+              workspaceRelationship: 'copied',
+            },
+            requests: [{ kind: 'shell', command: 'git remote -v', dialect: 'sh' }],
+          },
+        ],
+        tools: [
+          ['shell', 'read'],
+          ['shell', 'read'],
+        ],
+        output: expect.stringContaining('fixture output') as unknown,
+      })
+    },
+  )
 
   it('runs a refused command once after the person approves it, through the normal permission checks', async () => {
     const call = fauxToolCall('bash', { command: 'printf approved > approved.txt' }, { id: 'refused' })

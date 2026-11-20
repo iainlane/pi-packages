@@ -1,11 +1,18 @@
+import type { ProposedTool } from '../../src/investigation/review-route.js'
 import type { ToolCall } from '@earendil-works/pi-ai'
-import type { FileStat, ProcessResult, Sandbox, SandboxNegotiation } from 'pi-bring-your-own-sandbox/api'
-import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/api'
-import { describe, expect, it } from 'vitest'
-import { Investigation, INVESTIGATION_REQUIREMENTS } from '../../src/investigation/investigation.js'
+import type { FileStat, ProcessResult, Sandbox, SandboxCopyOptions } from 'pi-bring-your-own-sandbox/api'
+import {
+  SandboxTimeoutError,
+  UnsupportedSandboxCapabilityError,
+  UnsupportedSandboxPolicyError,
+} from 'pi-bring-your-own-sandbox/api'
+import { describe, expect, it, vi } from 'vitest'
+import { Investigation } from '../../src/investigation/investigation.js'
+import { reviewRoutes } from '../../src/investigation/review-route.js'
+import { reviewWorkspace } from '../helpers.js'
 
 const CONTEXT = { cwd: '/home/user/repo', sessionManager: {} } as never
-const RESTRICTED = { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' } as const
+const tool = { toolCallId: 'call', toolName: 'bash', source: 'tool_call' } as const
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text)
 
 interface FakeSandbox {
@@ -23,20 +30,24 @@ function processResult(stdout: string, stderr = '', code = 0): ProcessResult {
   }
 }
 
-/** Records each sandbox operation in order, as `open`, `exec <command>`, `stat <path>` or `read <path>` */
-function setup(options: { negotiation?: SandboxNegotiation; sandbox?: FakeSandbox; acquire?: () => Promise<Sandbox> }) {
+/**
+ * Records each sandbox operation in order, as `copy`, `exec <command>`, `stat <path>` or `read <path>`, and the
+ * options passed to each `copy`
+ */
+function setup(options: { available?: boolean; sandbox?: FakeSandbox; acquire?: () => Promise<Sandbox> }) {
   const operations: string[] = []
-  const negotiated: unknown[][] = []
   const requests: unknown[][] = []
+  const copies: (SandboxCopyOptions | undefined)[] = []
   const fake = options.sandbox ?? {}
   const sandbox = {
-    workspace: { root: '/project', pathFlavor: 'posix' },
+    ...reviewWorkspace,
     exec: async (request: { command: string }, execOptions: object) => {
       operations.push(`exec ${request.command}`)
       requests.push([request, { ...execOptions, signal: 'signal' }])
       return (fake.exec ?? (async () => processResult('')))(request, execOptions)
     },
     files: {
+      ...reviewWorkspace.files,
       stat: async (path: string) => {
         operations.push(`stat ${path}`)
         return (fake.files?.stat ?? (async (): Promise<FileStat> => ({ kind: 'file', size: 0 })))(path)
@@ -48,18 +59,24 @@ function setup(options: { negotiation?: SandboxNegotiation; sandbox?: FakeSandbo
     },
   }
   const investigation = new Investigation({} as never, {
-    negotiateSandbox: async (...args: unknown[]) => {
-      negotiated.push(args)
-      return options.negotiation ?? { ok: true as const, policy: RESTRICTED }
-    },
-    getSandbox: async () => {
-      operations.push('open')
-      return (options.acquire ?? (async () => sandbox as unknown as Sandbox))()
-    },
+    available: () => options.available !== false,
+    resolve: () => ({
+      copy: async copyOptions => {
+        operations.push('copy')
+        copies.push(copyOptions)
+        return {
+          sandbox: await (options.acquire ?? (async () => sandbox as unknown as Sandbox))(),
+          close: async () => {
+            operations.push('close')
+            return { confirmed: true, recoveries: [], failures: [] }
+          },
+        }
+      },
+    }),
   })
   investigation.start(CONTEXT)
 
-  return { investigation, operations, negotiated, requests }
+  return { investigation, operations, requests, copies }
 }
 
 function call(name: string, args: ToolCall['arguments'], id = `call-${name}`): ToolCall {
@@ -67,7 +84,7 @@ function call(name: string, args: ToolCall['arguments'], id = `call-${name}`): T
 }
 
 async function runOne(investigation: Investigation, toolCall: ToolCall) {
-  const run = investigation.forReview(new AbortController().signal)
+  const run = investigation.forReview(new AbortController().signal, tool)
   const [result] = await run.run([toolCall])
 
   return {
@@ -80,27 +97,43 @@ async function runOne(investigation: Investigation, toolCall: ToolCall) {
 }
 
 describe('investigation', () => {
-  it('negotiates the restricted sandbox at session start without opening one', async () => {
-    const { investigation, operations, negotiated } = setup({})
-
-    expect({ availability: await investigation.availability(), negotiated, operations }).toStrictEqual({
+  it('discovers review routes without opening a copy', async () => {
+    const { investigation, operations } = setup({})
+    expect({ availability: await investigation.availability(), operations }).toStrictEqual({
       availability: { available: true },
-      negotiated: [[{}, CONTEXT, INVESTIGATION_REQUIREMENTS]],
       operations: [],
     })
   })
 
-  it('reports why investigation is unavailable when the configured sandbox cannot meet the requirements', async () => {
-    const { investigation } = setup({
-      negotiation: {
-        ok: false,
-        error: new UnsupportedSandboxPolicyError({ operation: 'acquire', providerId: 'passthrough' }),
-      },
-    })
-
+  it('reports unavailable review routes', async () => {
+    const { investigation } = setup({ available: false })
     expect(await investigation.availability()).toStrictEqual({
       available: false,
-      reason: 'the selected sandbox cannot satisfy the requested policy',
+      reason: 'no tool route provides review copies',
+    })
+  })
+
+  it('opens and releases a separate copy for each review, stating the investigation requirements', async () => {
+    const { investigation, operations, copies } = setup({})
+    const first = investigation.forReview(new AbortController().signal, tool)
+    const second = investigation.forReview(new AbortController().signal, tool)
+    await first.run([call('shell', { command: 'first' })])
+    await second.run([call('shell', { command: 'second' })])
+    await first.close()
+    await second.run([call('shell', { command: 'still open' })])
+    await second.close()
+    const requirements = {
+      guarantees: ['no-workspace-writes', 'no-network', 'no-host-user-data'],
+      capabilities: ['exec', 'files.read'],
+      shells: ['sh'],
+      processKinds: ['shell'],
+      exitStatus: 'guaranteed',
+      terminationScope: 'process-group',
+      signal: expect.any(AbortSignal) as unknown,
+    }
+    expect({ operations, copies }).toStrictEqual({
+      operations: ['copy', 'exec first', 'copy', 'exec second', 'close', 'exec still open', 'close'],
+      copies: [requirements, requirements],
     })
   })
 
@@ -108,7 +141,7 @@ describe('investigation', () => {
     const { investigation, operations, requests } = setup({
       sandbox: { exec: async () => processResult('main\n', 'warning: é\n', 0) },
     })
-    const run = investigation.forReview(new AbortController().signal)
+    const run = investigation.forReview(new AbortController().signal, tool)
     const results = await run.run([call('shell', { command: 'git branch --show-current' }, 'a')])
     await run.run([call('shell', { command: 'git status' }, 'b')])
 
@@ -133,7 +166,7 @@ describe('investigation', () => {
           timestamp: expect.any(Number) as unknown,
         },
       ],
-      operations: ['open', 'exec git branch --show-current', 'exec git status'],
+      operations: ['copy', 'exec git branch --show-current', 'exec git status'],
       requests: ['git branch --show-current', 'git status'].map(command => [
         { kind: 'shell', command, dialect: 'sh' },
         { timeoutMs: 10_000, maxCaptureBytes: 32 * 1024, signal: 'signal' },
@@ -174,7 +207,7 @@ describe('investigation', () => {
 
     expect({ result, operations }).toStrictEqual({
       result: { text: 'two\nthree', isError: false },
-      operations: ['open', 'stat /project/src/a.ts', 'read /project/src/a.ts'],
+      operations: ['copy', 'stat /project/src/a.ts', 'read /project/src/a.ts'],
     })
   })
 
@@ -208,19 +241,19 @@ describe('investigation', () => {
     }).toStrictEqual({
       isError: true,
       mentions: true,
-      operations: ['open', 'stat data.bin', ...(read ? ['read data.bin'] : [])],
+      operations: ['copy', 'stat data.bin', ...(read ? ['read data.bin'] : [])],
     })
   })
 
   it('stops running calls once the review has made eight, and reports the budget as exhausted', async () => {
     const { investigation, operations } = setup({})
-    const run = investigation.forReview(new AbortController().signal)
+    const run = investigation.forReview(new AbortController().signal, tool)
     const results = await run.run(
       Array.from({ length: 9 }, (_, index) => call('shell', { command: `echo ${index}` }, `${index}`)),
     )
 
     expect({ operations, last: results.at(-1)?.content, exhausted: run.exhausted }).toStrictEqual({
-      operations: ['open', ...Array.from({ length: 8 }, (_, index) => `exec echo ${index}`)],
+      operations: ['copy', ...Array.from({ length: 8 }, (_, index) => `exec echo ${index}`)],
       last: [{ type: 'text', text: 'Not run: the investigation budget for this review is exhausted.' }],
       exhausted: true,
     })
@@ -230,46 +263,139 @@ describe('investigation', () => {
     const { investigation, operations } = setup({
       sandbox: { exec: async () => processResult('x'.repeat(32 * 1024)) },
     })
-    const run = investigation.forReview(new AbortController().signal)
+    const run = investigation.forReview(new AbortController().signal, tool)
     await run.run([0, 1, 2].map(index => call('shell', { command: 'cat big' }, `${index}`)))
 
     expect({ operations, bytes: run.bytes, exhausted: run.exhausted }).toStrictEqual({
-      operations: ['open', 'exec cat big', 'exec cat big'],
+      operations: ['copy', 'exec cat big', 'exec cat big'],
       bytes: 64 * 1024,
       exhausted: true,
     })
   })
 
-  it('disables investigation for the session when the opened sandbox cannot meet the requirements', async () => {
+  it.each([
+    new UnsupportedSandboxPolicyError({ operation: 'acquire', providerId: 'fixture' }),
+    new Error('provider start failed'),
+  ])('retries acquisition on the next review after %s', async error => {
     const { investigation, operations } = setup({
       acquire: async () => {
-        throw new UnsupportedSandboxPolicyError({ operation: 'acquire', providerId: 'fixture' })
-      },
-    })
-    const { run, result } = await runOne(investigation, call('shell', { command: 'ls' }))
-
-    expect({
-      result: result.isError,
-      exhausted: run.exhausted,
-      availability: (await investigation.availability()).available,
-      operations,
-    }).toStrictEqual({ result: true, exhausted: true, availability: false, operations: ['open'] })
-  })
-
-  it('disables investigation for the review only when acquisition fails otherwise', async () => {
-    const { investigation, operations } = setup({
-      acquire: async () => {
-        throw new Error('provider start failed')
+        throw error
       },
     })
     const first = await runOne(investigation, call('shell', { command: 'ls' }))
     await runOne(investigation, call('shell', { command: 'ls' }))
 
     expect({
+      refused: first.result.isError,
       exhausted: first.run.exhausted,
       availability: (await investigation.availability()).available,
       operations,
-    }).toStrictEqual({ exhausted: true, availability: true, operations: ['open', 'open'] })
+    }).toStrictEqual({ refused: true, exhausted: true, availability: true, operations: ['copy', 'copy'] })
+  })
+
+  it('closes a copy that arrives after the review is cancelled', async () => {
+    const opened = Promise.withResolvers<Sandbox>()
+    const { investigation, operations } = setup({ acquire: async () => opened.promise })
+    const controller = new AbortController()
+    const run = investigation.forReview(controller.signal, tool)
+    const pending = run.run([call('shell', { command: 'ls' })])
+    const rejected = expect(pending).rejects.toThrow('cancelled during open')
+    controller.abort(new Error('cancelled during open'))
+    const closing = run.close()
+    opened.resolve(reviewWorkspace as unknown as Sandbox)
+    await Promise.all([rejected, closing])
+    expect(operations).toStrictEqual(['copy', 'close'])
+  })
+
+  it.each(['confirmed', 'open failed'] as const)('reports late cleanup after a pending open: %s', async outcome => {
+    vi.useFakeTimers()
+    try {
+      const opened = Promise.withResolvers<Sandbox>()
+      const { investigation, operations } = setup({ acquire: async () => opened.promise })
+      const run = investigation.forReview(new AbortController().signal, tool)
+      const running = run.run([call('shell', { command: 'ls' })])
+      const rejected = expect(running).rejects.toMatchObject({ name: 'AbortError' })
+      const closing = run.close()
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(await Promise.race([closing, Promise.resolve('pending')])).toBe('pending')
+      await vi.advanceTimersByTimeAsync(1)
+      const result = await closing
+      if (result?.failure !== 'timed-out') throw new Error('Expected a cleanup timeout.')
+      if (outcome === 'confirmed') opened.resolve(reviewWorkspace as unknown as Sandbox)
+      else opened.reject(new Error('The open failed.'))
+      await rejected
+      expect({ late: await result.late, operations }).toStrictEqual(
+        outcome === 'confirmed'
+          ? { late: 'confirmed', operations: ['copy', 'close'] }
+          : { late: 'not-opened', operations: ['copy'] },
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    {
+      error: new UnsupportedSandboxPolicyError({ operation: 'acquire', providerId: 'fixture' }),
+      reason: 'the selected sandbox cannot satisfy the requested policy',
+    },
+    {
+      error: new UnsupportedSandboxCapabilityError({ operation: 'acquire', providerId: 'fixture' }),
+      reason: 'the selected sandbox does not support the required capability',
+    },
+    {
+      error: new SandboxTimeoutError({ operation: 'acquire', completion: 'confirmed' }),
+      reason: 'the sandbox operation exceeded its deadline',
+    },
+  ])('reports a copy that BYOS rejects as unavailable: $error.name', async ({ error, reason }) => {
+    const { investigation, operations } = setup({
+      acquire: async () => {
+        throw error
+      },
+    })
+    const { run, result } = await runOne(investigation, call('shell', { command: 'ls' }))
+    expect({ operations, result, unavailableReason: run.unavailableReason, exhausted: run.exhausted }).toStrictEqual({
+      operations: ['copy'],
+      result: { isError: true, text: `Investigation is unavailable: ${reason}` },
+      unavailableReason: reason,
+      exhausted: true,
+    })
+  })
+
+  it('closes a copy from the route that fails the investigation requirements, and reports it as unavailable', async () => {
+    const operations: string[] = []
+    const pi = {
+      events: {
+        emit(_channel: string, message: { kind?: string; reply: (source?: unknown) => void }) {
+          if (message.kind === 'available') {
+            message.reply()
+            return
+          }
+          message.reply({
+            copy: async () => {
+              operations.push('copy')
+              return {
+                sandbox: { ...reviewWorkspace, policy: { ...reviewWorkspace.policy, workspaceAccess: 'read-write' } },
+                close: async () => {
+                  operations.push('close')
+                  return { confirmed: true, recoveries: [], failures: [] }
+                },
+              }
+            },
+          })
+        },
+      },
+    }
+    const investigation = new Investigation(pi as never)
+    investigation.start({ cwd: '/repo', sessionManager: { getSessionId: () => 'session' } } as never)
+    const { run, result } = await runOne(investigation, call('shell', { command: 'ls' }))
+    const reason = 'the selected sandbox cannot satisfy the requested policy'
+    expect({ operations, result, unavailableReason: run.unavailableReason, exhausted: run.exhausted }).toStrictEqual({
+      operations: ['copy', 'close'],
+      result: { isError: true, text: `Investigation is unavailable: ${reason}` },
+      unavailableReason: reason,
+      exhausted: true,
+    })
   })
 
   it('answers malformed arguments without running anything', async () => {
@@ -282,3 +408,51 @@ describe('investigation', () => {
     })
   })
 })
+
+const source = {
+  copy: async () => {
+    throw new Error('The route opened a copy.')
+  },
+}
+
+it.each([
+  { query: tool, answer: source, replies: 1, offered: true },
+  { query: tool, answer: source, replies: 2, offered: false },
+  { query: tool, answer: source, replies: 0, offered: false },
+  { query: tool, answer: async () => source, replies: 1, offered: false },
+  {
+    query: { ...tool, forwarding: {} as NonNullable<ProposedTool['forwarding']> },
+    answer: source,
+    replies: 1,
+    offered: false,
+  },
+  { query: { ...tool, source: 'skill_read' as const }, answer: source, replies: 1, offered: false },
+])(
+  'resolves a review route from the original tool call ($query.source, $replies responses, offered: $offered)',
+  async ({ query, answer, replies, offered }) => {
+    const pi = {
+      events: {
+        emit(
+          channel: string,
+          message: { sessionId: string; toolName: string; toolCallId: string; reply: (answer: unknown) => void },
+        ) {
+          expect([channel, message.sessionId, message.toolName, message.toolCallId]).toStrictEqual([
+            'pi-byos:review:tool-call:v2',
+            'session',
+            'bash',
+            'call',
+          ])
+          for (let n = 0; n < replies; n++) message.reply(answer)
+        },
+      },
+    }
+    const resolved = reviewRoutes.resolve(
+      pi as never,
+      { cwd: '/repo', sessionManager: { getSessionId: () => 'session' } } as never,
+      query,
+    )
+    const copied =
+      resolved === undefined ? 'not offered' : await resolved.copy().catch((error: unknown) => (error as Error).message)
+    expect(copied).toBe(offered ? 'The route opened a copy.' : 'not offered')
+  },
+)

@@ -95,9 +95,11 @@ function statusText(current: Generation, tally: Tally, investigation: Investigat
   }
   const counts = VERDICT_LABELS.flatMap(([kind, label]) => (tally[kind] > 0 ? [`${tally[kind]} ${label}`] : []))
   const limits =
-    investigates(current.config) && investigation?.available === false
-      ? [`no investigation: ${investigation.reason}`]
-      : []
+    !investigates(current.config) || investigation === undefined
+      ? []
+      : investigation.available
+        ? ['investigation for routed calls']
+        : [`no investigation: ${investigation.reason}`]
 
   return [`${AUTHORIZER_NAME} ready`, ...counts, ...limits].join(' · ')
 }
@@ -111,7 +113,6 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   })
   // Authorize calls in progress, which shutdown lets finish recording their verdicts
   const outstanding = new Set<Promise<AuthorizerVerdict>>()
-  // Negotiated at each session start; undefined until the sandbox provider answers
   let investigationStatus: InvestigationAvailability | undefined
   let sessionStarts = 0
   let generation: Generation | undefined

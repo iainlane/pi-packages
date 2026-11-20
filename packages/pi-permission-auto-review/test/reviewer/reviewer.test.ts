@@ -695,6 +695,63 @@ describe('permission reviewer', () => {
       })
     })
 
+    it.each([
+      { failure: 'unconfirmed', close: async () => ({ confirmed: false }) },
+      { failure: 'timed-out', close: async () => new Promise<{ confirmed: boolean }>(() => {}) },
+    ])('preserves a denial when copy cleanup is $failure', async ({ failure, close }) => {
+      const harness = createHarness({
+        investigation: fakeInvestigation({ stdout: 'ok', close }),
+        replies: [investigationReply('shell', { command: 'ls' }), reply(DENY)],
+      })
+      const { verdict, entries } = await harness.authorize()
+      expect({
+        verdict: verdict.kind,
+        cleanup: entries.find(([event]) => event === 'auto_review.copy_cleanup')?.[1]?.['failure'],
+      }).toStrictEqual({ verdict: 'deny', cleanup: failure })
+    })
+
+    it('returns the verdict on timeout and records a later failed copy', async () => {
+      const opened = Promise.withResolvers<void>()
+      const harness = createHarness({
+        investigation: fakeInvestigation({ stdout: 'ok', beforeOpen: opened.promise }),
+        replies: [investigationReply('shell', { command: 'ls' })],
+      })
+      const { verdict, entries } = harness.start()
+      await vi.runAllTimersAsync()
+      const initial = await Promise.race([verdict, Promise.resolve('pending')])
+      expect(initial, 'The reviewer must return the verdict at its deadline.').not.toBe('pending')
+      expect(initial).toMatchObject({ kind: 'defer' })
+      opened.reject(new Error('The copy failed.'))
+      await vi.runAllTimersAsync()
+      expect(
+        entries.filter(([event]) => event === 'auto_review.copy_cleanup').map(([, fields]) => fields),
+      ).toStrictEqual([
+        { requestId: 'request-1', failure: 'timed-out' },
+        { requestId: 'request-1', late: true, opened: false },
+      ])
+    })
+
+    it('logs an unconfirmed copy release that finishes after the verdict', async () => {
+      const release = Promise.withResolvers<{ confirmed: boolean }>()
+      const harness = createHarness({
+        investigation: fakeInvestigation({ stdout: 'ok', close: async () => release.promise }),
+        replies: [investigationReply('shell', { command: 'ls' }), reply(DENY)],
+      })
+      const { verdict, entries } = await harness.authorize()
+      release.resolve({ confirmed: false })
+      await vi.runAllTimersAsync()
+      expect({
+        verdict: verdict.kind,
+        cleanup: entries.filter(([event]) => event === 'auto_review.copy_cleanup').map(([, fields]) => fields),
+      }).toStrictEqual({
+        verdict: 'deny',
+        cleanup: [
+          { requestId: 'request-1', failure: 'timed-out' },
+          { requestId: 'request-1', late: true, confirmed: false },
+        ],
+      })
+    })
+
     it('asks for the verdict without further calls once the budget is exhausted', async () => {
       const calls = Array.from({ length: 8 }, (_, index) =>
         investigationReply('shell', { command: `echo ${index}` }, `call-${index}`),
@@ -742,7 +799,7 @@ describe('permission reviewer', () => {
       expect(toolNames(harness)).toStrictEqual([undefined])
     })
 
-    it('continues the conversation after a review that investigated, offering the tools again', async () => {
+    it('starts a new conversation after closing the previous review copy', async () => {
       const harness = createHarness({
         config: { followUpReviews: 'always' },
         investigation: fakeInvestigation({ stdout: 'ok' }),
@@ -755,11 +812,7 @@ describe('permission reviewer', () => {
         roles: harness.streamSimple.mock.calls.map(([, context]) => context.messages.map(message => message.role)),
         tools: toolNames(harness),
       }).toStrictEqual({
-        roles: [
-          ['user'],
-          ['user', 'assistant', 'toolResult'],
-          ['user', 'assistant', 'toolResult', 'assistant', 'user'],
-        ],
+        roles: [['user'], ['user', 'assistant', 'toolResult'], ['user']],
         tools: [
           ['shell', 'read'],
           ['shell', 'read'],
@@ -790,7 +843,7 @@ describe('permission reviewer', () => {
         config: { followUpReviews: 'always' },
         investigation: {
           availability: async () => (available ? sandbox.availability() : { available: false, reason: 'gone' }),
-          forReview: signal => sandbox.forReview(signal),
+          forReview: (signal, details) => sandbox.forReview(signal, details),
         },
         replies,
       })

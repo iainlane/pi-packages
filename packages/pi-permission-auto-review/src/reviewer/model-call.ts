@@ -127,13 +127,10 @@ async function sleep(milliseconds: number, signal: AbortSignal): Promise<void> {
 
 /** A provider is not bound to honour the abort signal promptly, so the timeout is enforced here */
 async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) {
-    throw abortError()
-  }
-
   return new Promise((resolve, reject) => {
     const onAbort = (): void => reject(abortError())
-    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
     promise.then(
       value => {
         signal.removeEventListener('abort', onAbort)
@@ -284,7 +281,7 @@ export function createModelCall(options: ModelCallOptions): ModelCall {
       const { run } = result
       let results: Message[]
       try {
-        results = await run.run(result.toolCalls)
+        results = await raceWithSignal(run.run(result.toolCalls), signal)
       } catch (error) {
         if (signal.aborted) {
           return aborted()

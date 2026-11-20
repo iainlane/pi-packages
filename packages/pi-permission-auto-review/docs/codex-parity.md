@@ -20,10 +20,10 @@ behind development feature flags are out of scope.
 
 [codex-release]: https://github.com/openai/codex/tree/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/ext/guardian-reviewer
 
-The sandbox SDK is pinned to [BYOS `4f7a56b`][byos]. Load a provider extension
+The sandbox SDK is pinned to [BYOS `4103d5b`][byos]. Load a provider extension
 separately; the SDK dependency does not activate a provider.
 
-[byos]: https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tree/4f7a56b0c3db3a7ec94553d83b125d5f59517e39/packages/sdk
+[byos]: https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tree/4103d5b3a81822136d0aa5646a5b7342ef55b421/packages/sdk
 
 ## What the host gives an authorizer
 
@@ -136,24 +136,25 @@ interrupts the run.
 
 Codex's reviewer can run read-only commands in a managed sandbox to check local
 facts, such as whether a file exists or where a repository's remote points.
-Pi has no sandbox of its own, so the `codex` preset uses the sandbox that the
-person configured through `pi-bring-your-own-sandbox`. At each session
-start, the extension asks the configured provider whether it can open a backend
-that cannot write to the workspace, cannot reach the network, sees nothing
-outside the workspace, runs POSIX `sh` commands with a guaranteed exit status,
-stops a command's whole process group on cancellation, and reads files. The
-provider extension activates itself with `registerSandboxProvider` and supplies
-its configuration and base policy through the `configure` callback. The SDK
-resolves that configuration once per runtime generation. The reviewer only
-tightens the base policy: a provider whose default backends may write still
-gives the reviewer a read-only one, if it supports that policy.
+The Pi reviewer asks the active BYOS shell route for the destination of the
+specific local tool call. Load a provider that supports copies and the BYOS
+shell routing extension before the permission gate. The router answers the
+versioned `pi-byos:review:tool-call:v2` event while that call is pending.
 
-When no provider can meet these requirements, including the default host
-passthrough, the reviewer has no tools, as Codex's reviewer has none without a
-managed sandbox. The footer shows `no investigation` with the reason, and the
-reason is also logged.
-The sandbox opens at the first tool call of the session and is shared by later
-reviews.
+The first investigation call opens a fresh private copy of the files that the
+proposed command will see: the host checkout or the workspace of the proposed
+sandbox allocation. The reviewer cannot run commands in the destination itself.
+The copy must guarantee that the reviewer cannot write to the copy's workspace,
+that networking is denied and that host user data is inaccessible. It must also
+support file reads, POSIX shell execution, guaranteed exit status and
+process-group or workload termination. BYOS rejects a copy that does not meet
+these requirements. The provider may let the copy read operating-system and
+runtime files, which a native provider needs in order to start a shell. Each
+review closes its own copy on completion or cancellation. Forwarded asks defer
+before review. If no route claims a local call, the reviewer uses the transcript
+alone. If BYOS cannot open a suitable copy, the reviewer continues without
+investigation tools. The decision log records the reason. The footer shows
+whether a review route answers the session query.
 
 The reviewer has two tools. `shell` runs one command in the workspace root with
 a 10-second limit and 32 KiB of output. `read` reads a UTF-8 text file of up to
@@ -164,11 +165,10 @@ reaches either limit, or the sandbox fails, the next request tells the model to
 answer without tools. As in Codex, a command counts as refused only when it
 fails and its own output reports a denial.
 
-A follow-up review continues the conversation of a review that called tools:
-its request repeats the tool calls and their results and offers the tools
-again. As in Codex, which starts a new reviewer session when its tools change,
-the conversation starts over when investigation becomes available or
-unavailable.
+When a review inspects its copy, the next review starts a new conversation.
+An earlier file read or shell result can describe a different destination or
+an older version of the same file. Reviews based on the transcript alone can
+still continue when the available tools and transcript permit it.
 
 ## Interaction answers
 
@@ -247,9 +247,8 @@ check. Closing the gap needs a change in Pi.
 - Forwarded subagent asks go to the human, because the parent cannot see the
   child's action.
 - Codex derives the reviewer's sandbox from the parent session's permission
-  profile. Pi has no permission profile, so investigation asks the configured
-  BYOS provider for a fixed read-only policy without network access, and has
-  no tools when the provider cannot meet it.
+  profile. Pi uses a fresh read-only copy of the proposed execution
+  destination with networking denied.
 - The denial count starts again when an agent run starts or settles, because
   Pi starts a turn before every model response.
 - Evidence is text only. When an image would be needed to establish authority

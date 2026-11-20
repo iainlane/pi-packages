@@ -175,27 +175,67 @@ export function investigationReply(
   }
 }
 
+/** A facade method that a test has not replaced. BYOS checks that a copy's facade has every method. */
+async function unexpected(): Promise<never> {
+  throw new Error('The review fixture does not implement this operation.')
+}
+
+export const reviewWorkspace = {
+  providerId: 'fixture',
+  backendId: 'review',
+  exec: async (): Promise<never> => unexpected(),
+  copy: async (): Promise<never> => unexpected(),
+  files: {
+    readFile: async (): Promise<never> => unexpected(),
+    writeFile: async (): Promise<never> => unexpected(),
+    mkdir: async (): Promise<never> => unexpected(),
+    access: async (): Promise<never> => unexpected(),
+    stat: async (): Promise<never> => unexpected(),
+    listDirectory: async (): Promise<never> => unexpected(),
+    updateText: async (): Promise<never> => unexpected(),
+  },
+  search: { find: async (): Promise<never> => unexpected(), grep: async (): Promise<never> => unexpected() },
+  workspace: { root: '/project', pathFlavor: 'posix', relationship: 'copied' },
+  policy: { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' },
+  capabilities: {
+    exitStatus: 'guaranteed',
+    terminationScope: 'workload',
+    operations: ['exec', 'files.read'],
+    shells: ['sh'],
+    processKinds: ['shell'],
+  },
+} as const
+
 /** A session investigation whose sandbox answers every shell command with `stdout`, or which none can serve */
-export function fakeInvestigation(sandbox: { stdout: string } | 'unavailable'): Investigation {
+export function fakeInvestigation(
+  sandbox:
+    | { stdout: string; beforeOpen?: Promise<void>; close?: () => Promise<{ confirmed: boolean }> }
+    | 'unavailable',
+): Investigation {
   const investigation = new Investigation({} as never, {
-    negotiateSandbox: async () =>
-      sandbox === 'unavailable'
-        ? ({ ok: false, error: { name: 'UnsupportedSandboxPolicyError', message: 'network access' } } as never)
-        : {
-            ok: true,
-            policy: { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' },
-          },
-    getSandbox: async () =>
-      ({
-        workspace: { root: '/workspace', pathFlavor: 'posix' },
-        exec: async () => ({
-          exit: { kind: 'code', code: 0 },
-          stdout: new TextEncoder().encode(sandbox === 'unavailable' ? '' : sandbox.stdout),
-          stderr: new Uint8Array(),
-          omittedBytes: { stdout: 0, stderr: 0 },
-          durationMs: 1,
-        }),
-      }) as never,
+    available: () => sandbox !== 'unavailable',
+    resolve: () => ({
+      copy: async () => {
+        if (sandbox !== 'unavailable') await sandbox.beforeOpen
+        return {
+          sandbox: {
+            ...reviewWorkspace,
+            exec: async () => ({
+              exit: { kind: 'code', code: 0 },
+              stdout: new TextEncoder().encode(sandbox === 'unavailable' ? '' : sandbox.stdout),
+              stderr: new Uint8Array(),
+              omittedBytes: { stdout: 0, stderr: 0 },
+              durationMs: 1,
+            }),
+          } as never,
+          close: async () => ({
+            confirmed: sandbox === 'unavailable' || sandbox.close === undefined || (await sandbox.close()).confirmed,
+            recoveries: [],
+            failures: [],
+          }),
+        }
+      },
+    }),
   })
   investigation.start({ cwd: '/workspace', sessionManager: {} } as never)
 

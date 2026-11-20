@@ -14,7 +14,6 @@ import {
   publishPermissionsService,
   unpublishPermissionsService,
 } from '@gotgenes/pi-permission-system'
-import { UnsupportedSandboxPolicyError } from 'pi-bring-your-own-sandbox/api'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EXTENSION_ID } from '../src/config/config.js'
 import { configPath } from '../src/config/store.js'
@@ -23,15 +22,7 @@ import { STATISTICS_ENTRY_TYPE } from '../src/statistics/records.js'
 import { GlobalStatisticsStore } from '../src/statistics/store.js'
 import { permissionDetails, useWorkspace, writeFile } from './helpers.js'
 
-const sandbox = vi.hoisted(() => ({ negotiation: undefined as unknown }))
-vi.mock('pi-bring-your-own-sandbox/api', async importOriginal => ({
-  ...(await importOriginal<object>()),
-  negotiateSandbox: async () =>
-    sandbox.negotiation ?? {
-      ok: true,
-      policy: { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' },
-    },
-}))
+let hasRoute = true
 
 type Handler = (...arguments_: unknown[]) => unknown
 type Authorize = Authorizer['authorize']
@@ -44,7 +35,7 @@ describe('permission auto-review extension', () => {
   const published: [string, PermissionsService][] = []
 
   afterEach(() => {
-    sandbox.negotiation = undefined
+    hasRoute = true
     for (const [sessionId, service] of published.splice(0)) {
       unpublishPermissionsService(sessionId, service)
     }
@@ -93,7 +84,14 @@ describe('permission auto-review extension', () => {
     const pi = {
       on: (name: string, handler: Handler) => add(handlers, name, handler),
       getAllTools: () => [],
-      events: { on: (name: string, handler: Handler) => add(eventHandlers, name, handler) },
+      events: {
+        on: (name: string, handler: Handler) => add(eventHandlers, name, handler),
+        emit: (channel: string, request: { kind?: string; reply: () => void }) => {
+          if (channel === 'pi-byos:review:tool-call:v2' && request.kind === 'available' && hasRoute) {
+            request.reply()
+          }
+        },
+      },
       registerCommand: (name: string, options: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
         commands.set(name, options)
       },
@@ -285,7 +283,10 @@ describe('permission auto-review extension', () => {
     expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, 'auto-review ready')
 
     await review(registerAuthorizer.mock.calls[0]?.[1])
-    expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, 'auto-review ready · 1 denied')
+    expect(harness.setStatus).toHaveBeenLastCalledWith(
+      EXTENSION_ID,
+      'auto-review ready · 1 denied · investigation for routed calls',
+    )
 
     harness.shutdown()
     expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, undefined)
@@ -353,17 +354,15 @@ describe('permission auto-review extension', () => {
   it.each([
     {
       preset: 'codex',
-      status: 'auto-review ready · no investigation: the selected sandbox cannot satisfy the requested policy',
+      status: 'auto-review ready · no investigation: no tool route provides review copies',
       warnings: [
-        [
-          `[${EXTENSION_ID}] the reviewer cannot investigate local state: the selected sandbox cannot satisfy the requested policy`,
-        ],
+        [`[${EXTENSION_ID}] the reviewer cannot investigate local state: no tool route provides review copies`],
       ],
     },
     { preset: 'claude-code', status: 'auto-review ready', warnings: [] },
   ])('shows in the footer when the $preset reviewer cannot investigate', async ({ preset, status, warnings }) => {
     writeFile(configPath(workspace.cwd, 'global'), { preset })
-    sandbox.negotiation = { ok: false, error: new UnsupportedSandboxPolicyError({ operation: 'acquire' }) }
+    hasRoute = false
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     publish(vi.fn(() => vi.fn()))
     const harness = start()

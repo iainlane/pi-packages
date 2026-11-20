@@ -65,7 +65,7 @@
     "prepack": "pnpm run build"
   },
   "dependencies": {
-    "pi-bring-your-own-sandbox": "github:underwhelmingperformance/pi-bring-your-own-sandbox#4f7a56b0c3db3a7ec94553d83b125d5f59517e39&path:/packages/sdk"
+    "pi-bring-your-own-sandbox": "github:underwhelmingperformance/pi-bring-your-own-sandbox#4103d5b3a81822136d0aa5646a5b7342ef55b421&path:/packages/sdk"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.5.0",
