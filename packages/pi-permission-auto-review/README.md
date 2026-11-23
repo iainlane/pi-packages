@@ -30,24 +30,37 @@ agents, each with the prompt, transcript and review flow of the original.
 ## Install
 
 ```bash
-pi install npm:@gotgenes/pi-permission-system
 pi install npm:@mzwing/pi-permission-auto-review
+pi install npm:@gotgenes/pi-permission-system
 ```
 
 It needs Pi 1.5.0 or later and `@gotgenes/pi-permission-system` 37.x to 42.x.
 
-Load this extension before pi-permission-system. The reviewer judges the
-complete input of the call that Pi is about to run, and only a `tool_call`
-handler that runs before pi-permission-system sees all of it. Pi runs those
-handlers in load order: `-e` extensions first, then the settings `extensions`
-paths, then `packages`, each in the order listed. With both in `packages`, put
-this one first:
+Pi runs `tool_call` handlers in extension load order. Load this extension
+before pi-permission-system. The auto-review handler must capture the
+complete tool input before the authorizer runs.
+
+For investigation, install a BYOS provider with copy support. For example,
+with a built MXC checkout, run `pi install ~/src/pi-byos-mxc`.
+List the provider before pi-permission-system in `packages` so its shell
+route can record the pending call before the reviewer asks about it.
+`pi install` appends new packages, so move the provider up if you installed
+it later.
+
+Put the entries in your personal settings as shown below. In
+`~/.pi/agent/settings.json`, Pi records the MXC checkout relative
+to the agent directory.
 
 ```json
 {
-  "packages": ["npm:@mzwing/pi-permission-auto-review", "npm:@gotgenes/pi-permission-system"]
+  "packages": ["../../src/pi-byos-mxc", "npm:@mzwing/pi-permission-auto-review", "npm:@gotgenes/pi-permission-system"]
 }
 ```
+
+Pi loads `-e` extensions and extensions from settings or extension directories
+before packages. It loads project packages before personal packages. If
+pi-permission-system loads from an earlier source, reordering the personal
+`packages` list cannot put the provider before it.
 
 Then add the reviewer to pi-permission-system's authorizer chain, normally in
 `~/.pi/agent/extensions/pi-permission-system/config.json`:
@@ -128,10 +141,12 @@ tokens, oldest first. If that is not enough, the ask comes to you.
 ## Investigation
 
 With the `codex` preset, the reviewer can inspect a read-only copy of the
-proposed command's workspace. Load a [BYOS provider and shell routing
-extension][investigation] before the permission gate. The first investigation
-call opens the copy. Later calls in that review see the same files. The
-reviewer closes the copy when it finishes. Networking is denied.
+proposed command's workspace. Follow the [install order][install] for your
+[BYOS provider][investigation]. MXC registers its own shell routes. If your
+provider needs a separate shell routing extension, load that extension before
+pi-permission-system too. The first investigation call opens the copy. Later
+calls in that review use the same copy. The reviewer attempts to close it when
+the review ends. Networking is denied.
 
 A command in a private Docker workspace is reviewed against the edits in that
 workspace. A command routed to the host is reviewed against the host checkout.
@@ -139,6 +154,7 @@ BYOS supplies routes for its Bash and PowerShell tools. The reviewer uses the
 transcript for native file tools and other unrouted calls. A failed copy also
 falls back to the transcript. The decision log records the reason.
 
+[install]: #install
 [investigation]: docs/codex-parity.md#investigation
 
 ## Running a refused command anyway
