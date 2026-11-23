@@ -13,10 +13,10 @@ an authorizer, and where the preset departs from Codex because of that.
 | Pi            | `@earendil-works/pi-coding-agent` 1.5.0                                             |
 | Permissions   | `@gotgenes/pi-permission-system` 42.0.0                                             |
 
-The reference is the synchronous reviewer: the
-`approvals_reviewer = "auto_review"` path, which is stable and enabled by
-default in that release. The asynchronous Guardian scorers and the history tools
-behind development feature flags are out of scope.
+The reference is the synchronous reviewer selected by
+`approvals_reviewer = "auto_review"`. The release defaults to `user`. The
+asynchronous Guardian scorers and the history tools behind development feature
+flags are out of scope.
 
 [codex-release]: https://github.com/openai/codex/tree/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/ext/guardian-reviewer
 
@@ -30,15 +30,15 @@ separately; the SDK dependency does not activate a provider.
 `test/host.test.ts` runs Pi, pi-permission-system and this extension in one
 process and records these facts.
 
-| Capability                           | Pi and pi-permission-system                                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Complete tool input                  | Not supplied for every tool. For bash, the payload contains the asking command unit and the full command. For writes and edits, the request contains a line and character summary. For other tools, including native `mcp__` tools, `toolInputPreview` contains the whole input as JSON with credential-like values masked; the display preview stops at 200 characters. |
-| Nested `codemode` calls              | Each nested call raises its own `tool_call` event and ask, with the id `<parent id>/<n>`. Nested calls never appear in the transcript.                                                                                                                                                                                                                                   |
-| Binding the review to executed input | Pi executes the object that the `tool_call` handlers see. A handler that runs after pi-permission-system can still change it, and Pi does not validate it again.                                                                                                                                                                                                         |
-| Forwarded subagent asks              | The parent's authorizer receives the child's payload and requester only: no tool call id, tool input or child transcript.                                                                                                                                                                                                                                                |
-| Who wrote a user message             | Session entries do not record it. The `input` event reports `interactive`, `rpc` or `extension` while the message is submitted.                                                                                                                                                                                                                                          |
-| Model-visible context                | `buildSessionProjection()` applies compaction and `context_edit` entries; `getBranch()` returns the raw history.                                                                                                                                                                                                                                                         |
-| Deterministic denials                | A static deny rule refuses the call before any authorizer runs.                                                                                                                                                                                                                                                                                                          |
+| Capability                           | Pi and pi-permission-system                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Complete tool input                  | Not supplied for every tool. For bash, the payload contains the asking command unit and the full command. For writes and edits, the request contains a line and character summary. For generic tools, including native `mcp__` tools, `toolInputPreview` contains the whole input as JSON with credential-like values masked. The display preview stops at 200 characters. |
+| Nested `codemode` calls              | Each nested call raises its own `tool_call` event with the id `<parent id>/<n>`. If policy asks about that call, the ask uses the same id. Nested calls never appear in the transcript.                                                                                                                                                                                    |
+| Binding the review to executed input | Pi executes the object that the `tool_call` handlers see. A handler that runs after pi-permission-system can still change it, and Pi does not validate it again.                                                                                                                                                                                                           |
+| Forwarded subagent asks              | The parent's authorizer receives the child's payload and requester, with any forwarded access facts and session grant suggestion. It receives no tool call id, full tool input or child transcript.                                                                                                                                                                        |
+| Who wrote a user message             | Session entries do not record it. The `input` event reports `interactive`, `rpc` or `extension` while the message is submitted.                                                                                                                                                                                                                                            |
+| Model-visible context                | `buildSessionProjection()` applies compaction and `context_edit` entries; `getBranch()` returns the raw history.                                                                                                                                                                                                                                                           |
+| Deterministic denials                | A static deny rule refuses the call before any authorizer runs.                                                                                                                                                                                                                                                                                                            |
 
 ## What the extension does with it
 
@@ -59,11 +59,13 @@ process and records these facts.
   message came from the interactive UI, RPC or an extension. With the `codex`
   preset, only a message from the interactive UI or RPC counts as the user's.
   When a skill, prompt template or input handler changed what the person typed,
-  the typed text counts and the expansion is untrusted. A message that the
-  extension cannot attribute with confidence reaches the reviewer whole as
-  `uncertain_user`. It might be the person's, so its restrictions bind, but it
-  cannot authorize anything. Compaction never removes it, and a context edit
-  that removes or replaces it defers the review, as for a verified message.
+  the typed text counts and the expansion is untrusted. A message with an
+  ambiguous or conflicting provenance record reaches the reviewer as
+  `uncertain_user`. A message without a provenance record is
+  `unverified_user`. An uncertain message might be the person's, so its
+  restrictions bind, but it cannot authorize anything. Compaction never
+  removes it, and a context edit that removes or replaces it defers the
+  review, as for a verified message.
 - See [context edits and compaction](#context-edits-and-compaction) for how
   the `codex` preset builds its evidence.
 - A verdict applies only if the session still matches what the review read.
@@ -81,11 +83,11 @@ across compaction and counts them first against its message allowance. The
 `codex` preset does the same. Verified user messages and recognised question
 answers come from the raw branch in full, so compaction does not remove them.
 Everything else comes from `buildSessionProjection()`, the context that the
-agent's model sees, with Codex's caps: 5,000 tokens for each message, 1,000
-for each tool record and 10,000 for tool records in total, the 40 newest
-records, and the 5 newest tool records always kept. Entries before a
-compaction cut appear only through the compaction summary, which cannot
-establish authorization.
+agent's model sees, with Codex's caps of 5,000 tokens per message, 1,000 per
+tool record and 10,000 for tool records in total. The reviewer budgets for up
+to 40 other records. It considers the five newest tool records first, within
+the same budgets. Entries before a compaction cut appear only through the
+compaction summary, which cannot establish authorization.
 
 User evidence counts against the 20,000-token message allowance before
 anything else, which only crowds out other records. When the whole request
@@ -98,11 +100,11 @@ fit.
 
 A `context_edit` takes precedence over both sources, and the reviewer never
 receives text that an edit removed or replaced. When an edit removes or
-replaces a verified user message or a recognised answer, the review defers:
-an extension can write such an edit, and removing a later restriction would
-otherwise leave an earlier permission standing. Edits of other entries only
-change the evidence, and a replaced user message that was not authority
-reaches the reviewer as an untrusted `edited_user` record.
+replaces a verified or uncertain user message or a recognised answer, the
+review defers: an extension can write such an edit, and removing a later
+restriction would otherwise leave an earlier permission standing. Edits of
+other entries only change the evidence, and a replaced user message that was
+not authority reaches the reviewer as an untrusted `edited_user` record.
 
 A follow-up review continues the earlier reviews' conversation with only what
 the session added. It starts over in full after a context edit or compaction,
@@ -162,11 +164,14 @@ displays keep the previous outcome.
 The reviewer has two tools. `shell` runs one command in the workspace root with
 a 10-second limit and 32 KiB of output. `read` reads a UTF-8 text file of up to
 8 MiB, selecting lines before it truncates the output at 32 KiB; a path inside
-the host workspace is mapped to the sandbox's workspace. A review can make
-eight calls and receive 64 KiB of command output or file content. Once it
-reaches either limit, or the sandbox fails, the next request tells the model to
-answer without tools. As in Codex, a command counts as refused only when it
-fails and its own output reports a denial.
+the host workspace is mapped to the sandbox's workspace.
+
+The reviewer stops running investigation tools after eight calls or once
+command output or file content reaches 64 KiB. The call that reaches the
+output threshold can exceed it. When either threshold is reached or the copy
+fails to open, the next request tells the model to answer without tools. The
+Pi reviewer counts a command as refused only when it fails and its own output
+reports a denial.
 
 When a review inspects its copy, the next review starts a new conversation.
 An earlier file read or shell result can describe a different destination or
@@ -188,9 +193,10 @@ request and a cancelled plan review are not answers.
 The reviewer receives each answer as a `user_interaction` record and the
 question, context and options as an untrusted `assistant` record before it.
 The assistant wrote the questions and option descriptions, so they define what
-the answer responds to but cannot authorize anything themselves. As in Codex, a
-question and its answer are included whole or left out together: a pair larger
-than 900 tokens is left out, and the metadata record reports `answersOmitted`.
+the answer responds to but cannot authorize anything themselves. For
+question tools, the reviewer includes the question and its answer together.
+If the pair exceeds 900 tokens, it omits both and reports `answersOmitted`.
+Plan approvals have no per-pair limit.
 
 A plan approval authorizes implementing the approved revision. Its question
 record contains the plan content from the tool result, whatever its size, so a
@@ -263,8 +269,9 @@ check. Closing the gap needs a change in Pi.
   that loads after pi-permission-system can still change it. Binding an
   approval to the executed input needs a final check before execution, or an
   input that later handlers cannot change.
-- A forwarded ask contains only the child's display payload and requester. The
-  parent needs the child's action and context to review it.
+- A forwarded ask contains the child's display payload and requester, and can
+  include access facts and a session grant suggestion. The parent needs the
+  child's action and context to review it.
 - Provenance records are ordinary custom entries. Authenticated provenance and
   submission receipts would remove the ambiguity between input events,
   transformations and recorded messages.
