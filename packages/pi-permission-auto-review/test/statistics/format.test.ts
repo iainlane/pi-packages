@@ -7,7 +7,7 @@ import { emptyModel, emptySummary } from '../../src/statistics/summary.js'
 const state: AutoStatusState = {
   registered: true,
   config: DEFAULT_CONFIG,
-  investigation: { available: true },
+  investigation: { kind: 'inspected' },
   circuitOpen: false,
 }
 
@@ -30,7 +30,7 @@ function overviewRows(sessionCost = 'USD 0.012345', globalCost = 'USD 0.004100')
   )
 }
 
-const HEADER = ['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: available', '']
+const HEADER = ['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: last review inspected a copy', '']
 const STARTED = ['', 'Global totals started 3 Nov 2026, 09:00 UTC']
 const FOOTER = ['', 'Details: /auto-stats details']
 
@@ -107,17 +107,26 @@ describe('statistics presentation', () => {
     )
   })
 
-  it('says when investigation is unavailable, and why', () => {
-    const output = formatAutoStatus(
-      {
-        ...state,
-        investigation: { available: false, reason: 'the selected sandbox cannot satisfy the requested policy' },
-      },
-      sample(),
-    )
-
-    expect(output.split('\n')[2]).toBe(
-      'Investigation: unavailable, the selected sandbox cannot satisfy the requested policy',
+  it.each([
+    { investigation: undefined, line: undefined },
+    { investigation: { kind: 'unused' }, line: 'Investigation: last review did not investigate' },
+    {
+      investigation: { kind: 'unavailable', reason: 'no-session-route' },
+      line: 'Investigation: no tool route provides review copies',
+    },
+    {
+      investigation: { kind: 'unavailable', reason: 'no-call-route' },
+      line: 'Investigation: last review had no route for its call',
+    },
+    {
+      investigation: { kind: 'unavailable', reason: 'copy-open-failed' },
+      line: 'Investigation: last review could not open a copy',
+    },
+  ] as const)('shows investigation outcome $line in the overview', ({ investigation, line }) => {
+    expect(formatAutoStatus({ ...state, investigation }, sample())).toBe(
+      [...HEADER.slice(0, 2), ...(line === undefined ? [] : [line]), '', ...overviewRows(), ...STARTED, ...FOOTER].join(
+        '\n',
+      ),
     )
   })
 

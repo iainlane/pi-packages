@@ -1,8 +1,9 @@
 import type { AutoReviewConfig } from '../config/config.js'
-import type { InvestigationAvailability } from '../investigation/investigation.js'
+import type { InvestigationOutcome } from '../investigation/investigation.js'
 import type { GlobalTotals } from './recorder.js'
 import type { StatisticsSummary } from './summary.js'
 import type { StatusRow } from './table.js'
+import { formatInvestigationOutcome } from '../investigation/investigation.js'
 import { PRESETS } from '../presets/presets.js'
 import { costComplete, ORDINARY_ISSUES } from './summary.js'
 import { statusComparison, statusTable } from './table.js'
@@ -13,8 +14,7 @@ const DETAIL_LIMIT = 20
 export interface AutoStatusState {
   registered: boolean
   config: AutoReviewConfig | undefined
-  /** Undefined until the sandbox provider has answered */
-  investigation: InvestigationAvailability | undefined
+  investigation: InvestigationOutcome | undefined
   /** Whether the denial limit refuses every ask without review until the next run */
   circuitOpen: boolean
 }
@@ -205,15 +205,12 @@ export function hasStatusProblems(state: AutoStatusState, data: StatusData): boo
 }
 
 function investigationLine(state: AutoStatusState): string[] {
-  if (state.config === undefined || !PRESETS[state.config.preset].investigates) {
+  const { config, investigation } = state
+  if (config === undefined || !PRESETS[config.preset].investigates || investigation === undefined) {
     return []
   }
-  const { investigation } = state
-  if (investigation === undefined) {
-    return ['Investigation: checking the sandbox']
-  }
 
-  return [investigation.available ? 'Investigation: available' : `Investigation: unavailable, ${investigation.reason}`]
+  return [`Investigation: ${formatInvestigationOutcome(investigation)}`]
 }
 
 function overview(state: AutoStatusState, data: StatusData, columns: number): string[] {

@@ -46,6 +46,28 @@ const COPY_REQUIREMENTS = {
 
 export type InvestigationAvailability = { available: true } | { available: false; reason: string }
 
+export type InvestigationOutcome =
+  | { kind: 'inspected' }
+  | { kind: 'unused' }
+  | { kind: 'unavailable'; reason: 'no-session-route' | 'no-call-route' | 'copy-open-failed' }
+
+const UNAVAILABLE_REASONS = {
+  'no-session-route': 'no tool route provides review copies',
+  'no-call-route': 'last review had no route for its call',
+  'copy-open-failed': 'last review could not open a copy',
+} satisfies Record<Extract<InvestigationOutcome, { kind: 'unavailable' }>['reason'], string>
+
+export function formatInvestigationOutcome(outcome: InvestigationOutcome): string {
+  switch (outcome.kind) {
+    case 'inspected':
+      return 'last review inspected a copy'
+    case 'unused':
+      return 'last review did not investigate'
+    case 'unavailable':
+      return UNAVAILABLE_REASONS[outcome.reason]
+  }
+}
+
 const lineNumber = v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)))
 const callSchema = v.variant('name', [
   v.object({ name: v.literal('shell'), arguments: v.strictObject({ command: v.pipe(v.string(), v.minLength(1)) }) }),
@@ -83,7 +105,6 @@ interface CallOutcome {
   refused?: boolean
 }
 
-/** A short reason for the footer and the log, such as "the selected sandbox cannot satisfy the requested policy" */
 function describeError(error: unknown): string {
   const message = isSandboxError(error) || error instanceof Error ? error.message : 'unknown error'
 
@@ -184,7 +205,7 @@ export class Investigation {
   async availability(): Promise<InvestigationAvailability> {
     const available = this.context !== undefined && this.routes.available(this.pi)
     return Promise.resolve(
-      available ? { available: true } : { available: false, reason: 'no tool route provides review copies' },
+      available ? { available: true } : { available: false, reason: UNAVAILABLE_REASONS['no-session-route'] },
     )
   }
 
@@ -200,6 +221,7 @@ export class InvestigationRun {
   readonly tools: Tool[] = TOOLS
   private pending: ReturnType<ShellReviewSource['copy']> | undefined
   private closing: Promise<CleanupFailure | undefined> | undefined
+  private usedCopy = false
   private callCount = 0
   private refusalCount = 0
   private outputBytes = 0
@@ -244,6 +266,20 @@ export class InvestigationRun {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  get outcome(): InvestigationOutcome | undefined {
+    if (this.source === undefined) {
+      return { kind: 'unavailable', reason: 'no-call-route' }
+    }
+    if (this.usedCopy) {
+      return { kind: 'inspected' }
+    }
+    if (this.unavailableReason !== undefined) {
+      return { kind: 'unavailable', reason: 'copy-open-failed' }
+    }
+
+    return this.pending === undefined ? { kind: 'unused' } : undefined
   }
 
   get calls(): number {
@@ -302,6 +338,7 @@ export class InvestigationRun {
       this.unavailableReason = describeError(error)
       return { text: `Investigation is unavailable: ${this.unavailableReason}`, isError: true, bytes: 0 }
     }
+    this.usedCopy = true
     const options = { signal: this.signal, timeoutMs: CALL_TIMEOUT_MS }
     let outcome: CallOutcome
     try {

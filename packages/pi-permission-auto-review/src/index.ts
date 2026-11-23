@@ -1,7 +1,7 @@
 import type { ActivationResult } from './config/command.js'
 import type { AutoReviewConfig } from './config/config.js'
 import type { LoadConfigResult } from './config/store.js'
-import type { InvestigationAvailability } from './investigation/investigation.js'
+import type { InvestigationOutcome } from './investigation/investigation.js'
 import type { ContextFile } from './presets/presets.js'
 import type { PermissionReviewer } from './reviewer/reviewer.js'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
@@ -24,7 +24,7 @@ import { ActionCapture } from './action/capture.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
-import { Investigation } from './investigation/investigation.js'
+import { formatInvestigationOutcome, Investigation } from './investigation/investigation.js'
 import { ManualApprovalController } from './manual/controller.js'
 import { registerManualApprovalTool } from './manual/tool.js'
 import { PRESETS } from './presets/presets.js'
@@ -86,7 +86,7 @@ function investigates(config: AutoReviewConfig | undefined): boolean {
   return config !== undefined && PRESETS[config.preset].investigates
 }
 
-function statusText(current: Generation, tally: Tally, investigation: InvestigationAvailability | undefined): string {
+function statusText(current: Generation, tally: Tally, investigation: InvestigationOutcome | undefined): string {
   if (current.config === undefined) {
     return `${AUTHORIZER_NAME} inactive: invalid config`
   }
@@ -94,14 +94,10 @@ function statusText(current: Generation, tally: Tally, investigation: Investigat
     return `${AUTHORIZER_NAME} inactive`
   }
   const counts = VERDICT_LABELS.flatMap(([kind, label]) => (tally[kind] > 0 ? [`${tally[kind]} ${label}`] : []))
-  const limits =
-    !investigates(current.config) || investigation === undefined
-      ? []
-      : investigation.available
-        ? ['investigation for routed calls']
-        : [`no investigation: ${investigation.reason}`]
+  const outcome =
+    investigates(current.config) && investigation !== undefined ? [formatInvestigationOutcome(investigation)] : []
 
-  return [`${AUTHORIZER_NAME} ready`, ...counts, ...limits].join(' · ')
+  return [`${AUTHORIZER_NAME} ready`, ...counts, ...outcome].join(' · ')
 }
 
 export default function permissionAutoReview(pi: ExtensionAPI): void {
@@ -113,7 +109,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   })
   // Authorize calls in progress, which shutdown lets finish recording their verdicts
   const outstanding = new Set<Promise<AuthorizerVerdict>>()
-  let investigationStatus: InvestigationAvailability | undefined
+  let investigationOutcome: InvestigationOutcome | undefined
   let sessionStarts = 0
   let generation: Generation | undefined
   let tally: Tally = { allow: 0, deny: 0, defer: 0 }
@@ -146,7 +142,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
 
   function renderStatus(current: Generation): void {
     try {
-      current.runtime.ui.setStatus(EXTENSION_ID, statusText(current, tally, investigationStatus))
+      current.runtime.ui.setStatus(EXTENSION_ID, statusText(current, tally, investigationOutcome))
     } catch {
       // The footer is a display; nothing that renders it may fail because of it
     }
@@ -156,6 +152,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     const controller = new AbortController()
     const history = { controller: new AbortController() }
     const sessionSignal = (): AbortSignal => AbortSignal.any([controller.signal, history.controller.signal])
+    let latestInvestigation: InvestigationOutcome | undefined
     const reviewer: PermissionReviewer =
       config === undefined
         ? { authorize: deferInvalidConfig, resetTurn: () => {}, circuitOpen: () => false }
@@ -166,6 +163,9 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
             context: runtime,
             contextFiles: () => contextFiles,
             investigation,
+            onInvestigation: outcome => {
+              latestInvestigation = outcome
+            },
             statistics: recorder.sink(),
             onRefusal: (action, refusal, snapshot) => manual.refuse(action, refusal, snapshot),
             get sessionSignal() {
@@ -202,6 +202,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
         }
         // A retired generation answers for a session or config that is gone
         if (generation === created) {
+          investigationOutcome = latestInvestigation ?? investigationOutcome
           tally[verdict.kind] += 1
           renderStatus(created)
         }
@@ -279,18 +280,20 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     contextFiles = []
     recorder.start(ctx.sessionManager)
     manual.start(ctx)
+    investigationOutcome = undefined
     generation = createGeneration(ctx, result.config)
     renderStatus(generation)
-    investigationStatus = undefined
     investigation.start(ctx)
     const session = (sessionStarts += 1)
     void investigation.availability().then(status => {
       if (session !== sessionStarts) {
         return
       }
-      investigationStatus = status
-      if (!status.available && investigates(generation?.config)) {
-        warn(`the reviewer cannot investigate local state: ${status.reason}`)
+      if (!status.available) {
+        investigationOutcome ??= { kind: 'unavailable', reason: 'no-session-route' }
+        if (investigates(generation?.config)) {
+          warn(`the reviewer cannot investigate local state: ${status.reason}`)
+        }
       }
       if (generation !== undefined) {
         renderStatus(generation)
@@ -369,7 +372,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   registerStatisticsCommand(pi, recorder, () => ({
     registered: generation?.dispose !== undefined,
     config: generation?.config,
-    investigation: investigationStatus,
+    investigation: investigationOutcome,
     circuitOpen: generation?.reviewer.circuitOpen() ?? false,
   }))
 }

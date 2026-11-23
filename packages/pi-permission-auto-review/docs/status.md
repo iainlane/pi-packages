@@ -3,10 +3,10 @@
 `/auto-stats` compares what automatic review did in the current session with
 the totals for every session of the Pi profile: how many asks it allowed,
 refused and left without a decision, and an estimated cost. It also shows the
-reviewer's model, whether investigation is available, when the global totals
-started, and any problem that makes a total incomplete. The command makes no
-model requests, and its report never goes into the session or any model's
-context.
+reviewer's model, when the global totals started, and any problem that makes
+a total incomplete. With the `codex` preset, the overview also shows the
+most recent investigation outcome. The command makes no model requests. The
+report stays out of the session and every model's context.
 
 ## Commands
 

@@ -153,8 +153,11 @@ runtime files, which a native provider needs in order to start a shell. Each
 review closes its own copy on completion or cancellation. Forwarded asks defer
 before review. If no route claims a local call, the reviewer uses the transcript
 alone. If BYOS cannot open a suitable copy, the reviewer continues without
-investigation tools. The decision log records the reason. The footer shows
-whether a review route answers the session query.
+investigation tools. The decision log records the reason. The footer and
+`/auto-stats` show the most recent investigation outcome. They show whether
+the review inspected a copy, did not investigate, or could not investigate,
+with a short reason. If a review ends while the copy is still opening, both
+displays keep the previous outcome.
 
 The reviewer has two tools. `shell` runs one command in the workspace root with
 a 10-second limit and 32 KiB of output. `read` reads a UTF-8 text file of up to

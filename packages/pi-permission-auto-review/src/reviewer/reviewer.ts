@@ -1,7 +1,7 @@
 import type { ActionCapture } from '../action/capture.js'
 import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig } from '../config/config.js'
-import type { Investigation, InvestigationRun } from '../investigation/investigation.js'
+import type { Investigation, InvestigationOutcome, InvestigationRun } from '../investigation/investigation.js'
 import type { ContextFile, Preset, ReviewFailure, ReviewFields, ReviewOutcome } from '../presets/presets.js'
 import type { UserMessageProvenance } from '../provenance/provenance.js'
 import type { ReviewStatistics } from '../statistics/recorder.js'
@@ -48,6 +48,7 @@ export interface ReviewerRuntime {
   sessionSignal: AbortSignal
   /** Reports whether a review route exists and opens a copy on the first investigation call of each review */
   investigation?: Pick<Investigation, 'availability' | 'forReview'>
+  onInvestigation?: (outcome: InvestigationOutcome) => void
   /** Receives every verdict with the calls behind it */
   statistics?: ReviewStatistics
   /** A reference that lets the person reconsider a refused action, when they can be asked */
@@ -154,6 +155,7 @@ async function runReview(
   ])
 
   let investigation: InvestigationRun | undefined
+  let unavailableInSession: InvestigationOutcome | undefined
   try {
     if (signal.aborted) {
       return { kind: 'failed', failure: 'cancelled' }
@@ -174,6 +176,7 @@ async function runReview(
         unavailable = investigation.unavailableReason
       } else {
         unavailable = status.reason
+        unavailableInSession = { kind: 'unavailable', reason: 'no-session-route' }
       }
     }
     const complete = createModelCall({
@@ -225,6 +228,10 @@ async function runReview(
           })
         })
       }
+    }
+    const investigationOutcome = investigation?.outcome ?? unavailableInSession
+    if (investigationOutcome !== undefined) {
+      runtime.onInvestigation?.(investigationOutcome)
     }
   }
 }

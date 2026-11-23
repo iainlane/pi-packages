@@ -1,3 +1,4 @@
+import type { AutoStatusState } from '../../src/statistics/format.js'
 import type { ExtensionAPI, RegisteredCommand } from '@earendil-works/pi-coding-agent'
 import process from 'node:process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -15,6 +16,12 @@ function setup(mode: 'tui' | 'rpc' | 'print', answers: (string | undefined)[] = 
   const commands = new Map<string, Command>()
   let interaction = new AbortController()
   const shown: [string, string][] = []
+  const state: AutoStatusState = {
+    registered: true,
+    config: DEFAULT_CONFIG,
+    investigation: undefined,
+    circuitOpen: false,
+  }
   const endSession = (): void => {
     interaction.abort()
     interaction = new AbortController()
@@ -30,7 +37,7 @@ function setup(mode: 'tui' | 'rpc' | 'print', answers: (string | undefined)[] = 
         return { signal, isCurrent: () => !signal.aborted }
       },
     },
-    () => ({ registered: true, config: DEFAULT_CONFIG, investigation: { available: true }, circuitOpen: false }),
+    () => state,
   )
   const context = {
     mode,
@@ -52,6 +59,7 @@ function setup(mode: 'tui' | 'rpc' | 'print', answers: (string | undefined)[] = 
   return {
     names: [...commands.keys()],
     shown,
+    state,
     /** The first line of each message shown, which identifies the report or text */
     headings: () => shown.map(([message, level]) => [message.split('\n')[0], level]),
     run: async (args: string) => commands.get('auto-stats')?.handler(args, context as never),
@@ -71,6 +79,21 @@ describe('/auto-stats', () => {
       names: ['auto-stats'],
       shown: [['Auto-review', 'info']],
     })
+  })
+
+  it('reads the latest investigation outcome each time the command runs', async () => {
+    const harness = setup('rpc')
+    await harness.run('')
+    harness.state.investigation = { kind: 'unused' }
+    await harness.run('')
+    harness.state.investigation = { kind: 'unavailable', reason: 'copy-open-failed' }
+    await harness.run('text')
+
+    expect(harness.shown.map(([message, level]) => [message.split('\n').slice(0, 3), level])).toStrictEqual([
+      [['Auto-review', 'Model: openai/codex-auto-review', ''], 'info'],
+      [['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: last review did not investigate'], 'info'],
+      [['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: last review could not open a copy'], 'info'],
+    ])
   })
 
   it.each(['details extra', 'session unknown', 'global usage extra', 'text extra'])(

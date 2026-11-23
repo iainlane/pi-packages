@@ -1,3 +1,4 @@
+import type { AssistantMessage } from '@earendil-works/pi-ai'
 import type { ExtensionAPI, ModelRegistry, RegisteredCommand } from '@earendil-works/pi-coding-agent'
 import type {
   Authorizer,
@@ -20,9 +21,12 @@ import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
 import { STATISTICS_ENTRY_TYPE } from '../src/statistics/records.js'
 import { GlobalStatisticsStore } from '../src/statistics/store.js'
-import { permissionDetails, useWorkspace, writeFile } from './helpers.js'
+import { investigationReply, permissionDetails, reply, reviewWorkspace, useWorkspace, writeFile } from './helpers.js'
 
 let hasRoute = true
+interface ReviewSource {
+  copy: () => Promise<unknown>
+}
 
 type Handler = (...arguments_: unknown[]) => unknown
 type Authorize = Authorizer['authorize']
@@ -33,8 +37,10 @@ const DENY = '{"outcome":"deny","rationale":"Not authorized."}'
 describe('permission auto-review extension', () => {
   const workspace = useWorkspace()
   const published: [string, PermissionsService][] = []
+  const shutdowns: (() => Promise<void>)[] = []
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(shutdowns.splice(0).map(async shutdown => shutdown()))
     hasRoute = true
     for (const [sessionId, service] of published.splice(0)) {
       unpublishPermissionsService(sessionId, service)
@@ -48,14 +54,10 @@ describe('permission auto-review extension', () => {
   }
 
   /** A registry whose every model answers `reply`, so a reviewer's decisions are observable */
-  function reviewRegistry(reply: string) {
+  function reviewRegistry(verdict: string) {
     const streamSimple = vi.fn((_model: unknown, _context: { systemPrompt: string }) => ({
-      result: async () => ({
-        role: 'assistant',
-        content: [{ type: 'text', text: reply }],
-        stopReason: 'stop',
-        usage: { input: 0, output: 0, cacheRead: 0 },
-      }),
+      result: async (): Promise<AssistantMessage> =>
+        reply(verdict, 'stop', { input: 0, output: 0, cacheRead: 0, totalTokens: 0 }),
     }))
     const registry = {
       getProvider: (id: string) => ({ id, getModels: () => [] }),
@@ -73,7 +75,7 @@ describe('permission auto-review extension', () => {
     return { registry, streamSimple }
   }
 
-  function start(registry: ModelRegistry = reviewRegistry(DENY).registry, projectTrusted = true) {
+  function start(registry: ModelRegistry = reviewRegistry(DENY).registry, projectTrusted = true, route?: ReviewSource) {
     const handlers = new Map<string, Handler[]>()
     const eventHandlers = new Map<string, Handler[]>()
     const commands = new Map<string, Omit<RegisteredCommand, 'name' | 'sourceInfo'>>()
@@ -86,9 +88,12 @@ describe('permission auto-review extension', () => {
       getAllTools: () => [],
       events: {
         on: (name: string, handler: Handler) => add(eventHandlers, name, handler),
-        emit: (channel: string, request: { kind?: string; reply: () => void }) => {
-          if (channel === 'pi-byos:review:tool-call:v2' && request.kind === 'available' && hasRoute) {
+        emit: (channel: string, request: { kind?: string; reply: (route?: ReviewSource) => void }) => {
+          if (channel !== 'pi-byos:review:tool-call:v2' || !hasRoute) return
+          if (request.kind === 'available') {
             request.reply()
+          } else if (route !== undefined) {
+            request.reply(route)
           }
         },
       },
@@ -122,6 +127,14 @@ describe('permission auto-review extension', () => {
       isProjectTrusted: () => projectTrusted,
     }
     const notify = vi.fn()
+    let ending: Promise<void> | undefined
+    const shutdownAndWait = async (): Promise<void> => {
+      ending ??= Promise.all((handlers.get('session_shutdown') ?? []).map(handler => handler({}, context))).then(
+        () => {},
+      )
+      return ending
+    }
+    shutdowns.push(shutdownAndWait)
 
     return {
       emit,
@@ -133,11 +146,8 @@ describe('permission auto-review extension', () => {
           context,
         )
       },
-      shutdown: () => emit('session_shutdown', {}, context),
-      /** Waits for the shutdown handlers, which let reviews in progress record their verdicts */
-      shutdownAndWait: async () => {
-        await Promise.all((handlers.get('session_shutdown') ?? []).map(handler => handler({}, context)))
-      },
+      shutdown: () => void shutdownAndWait(),
+      shutdownAndWait,
       appendEntry,
       setStatus,
       ready(sessionId: string | null = SESSION_ID) {
@@ -146,8 +156,8 @@ describe('permission auto-review extension', () => {
         }
       },
       notify,
-      async run(args: string) {
-        await commands.get('permission-auto-review')?.handler(args, {
+      async run(args: string, command = 'permission-auto-review') {
+        await commands.get(command)?.handler(args, {
           ...context,
           mode: 'tui',
           hasUI: true,
@@ -285,11 +295,158 @@ describe('permission auto-review extension', () => {
     await review(registerAuthorizer.mock.calls[0]?.[1])
     expect(harness.setStatus).toHaveBeenLastCalledWith(
       EXTENSION_ID,
-      'auto-review ready · 1 denied · investigation for routed calls',
+      'auto-review ready · 1 denied · last review had no route for its call',
     )
 
     harness.shutdown()
     expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, undefined)
+  })
+
+  function reviewCopy() {
+    return {
+      sandbox: {
+        ...reviewWorkspace,
+        exec: async () => ({
+          exit: { kind: 'code', code: 0 },
+          stdout: new TextEncoder().encode('ok'),
+          stderr: new Uint8Array(),
+          omittedBytes: { stdout: 0, stderr: 0 },
+          durationMs: 1,
+        }),
+      },
+      close: async () => ({ confirmed: true, recoveries: [], failures: [] }),
+    }
+  }
+
+  it.each([
+    { investigation: 'unused', status: 'last review did not investigate', callsTool: false },
+    { investigation: 'inspected', status: 'last review inspected a copy', callsTool: true },
+    { investigation: 'failed to open', status: 'last review could not open a copy', callsTool: true },
+  ])(
+    'shows the last review investigation in the footer and statistics when $investigation',
+    async ({ investigation, status, callsTool }) => {
+      const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+      publish(registerAuthorizer)
+      const { registry, streamSimple } = reviewRegistry(DENY)
+      const providerError = 'provider could not open the copy\u001B[2J'
+      const copy = vi.fn(async () => {
+        if (investigation === 'failed to open') {
+          throw new Error(providerError)
+        }
+
+        return reviewCopy()
+      })
+      if (callsTool) {
+        streamSimple.mockReturnValueOnce({
+          result: async () => investigationReply('shell', { command: 'pwd' }),
+        })
+      }
+      const harness = start(registry, true, { copy })
+      harness.start()
+      harness.ready()
+      await harness.run('', 'auto-stats')
+      const before = harness.setStatus.mock.lastCall
+      const beforeStats = String(harness.notify.mock.lastCall?.[0])
+        .split('\n')
+        .find(line => line.startsWith('Investigation:'))
+      const { entry } = await review(registerAuthorizer.mock.calls[0]?.[1])
+      await harness.run('', 'auto-stats')
+
+      const observed = {
+        before,
+        beforeStats,
+        footer: harness.setStatus.mock.lastCall,
+        stats: String(harness.notify.mock.lastCall?.[0])
+          .split('\n')
+          .find(line => line.startsWith('Investigation:')),
+        copyCalls: copy.mock.calls,
+        logReason: entry?.[1]?.['investigationUnavailable'],
+      }
+
+      expect(observed).toStrictEqual({
+        before: [EXTENSION_ID, 'auto-review ready'],
+        beforeStats: undefined,
+        footer: [EXTENSION_ID, `auto-review ready · 1 denied · ${status}`],
+        stats: `Investigation: ${status}`,
+        copyCalls: callsTool ? [[expect.any(Object)]] : [],
+        logReason: investigation === 'failed to open' ? providerError : undefined,
+      })
+    },
+  )
+
+  it.each([
+    {
+      retire: false,
+      during: 'auto-review ready · 1 denied · last review did not investigate',
+      after: 'auto-review ready · 2 denied · last review inspected a copy',
+    },
+    { retire: true, during: 'auto-review ready', after: 'auto-review ready' },
+  ])(
+    'updates investigation when an overlapping review finishes (retired: $retire)',
+    async ({ retire, during, after }) => {
+      const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+      publish(registerAuthorizer)
+      const { registry, streamSimple } = reviewRegistry(DENY)
+      const copying = Promise.withResolvers<void>()
+      const opened = Promise.withResolvers<ReturnType<typeof reviewCopy>>()
+      streamSimple.mockReturnValueOnce({ result: async () => investigationReply('shell', { command: 'pwd' }) })
+      const harness = start(registry, true, {
+        copy: async () => {
+          copying.resolve()
+          return opened.promise
+        },
+      })
+      harness.start()
+      harness.ready()
+      const authorize = registerAuthorizer.mock.calls[0]?.[1]
+      const slow = review(authorize)
+      await copying.promise
+      await review(authorize)
+      if (retire) {
+        harness.start()
+        harness.ready()
+      }
+      const beforeOpen = harness.setStatus.mock.lastCall
+      opened.resolve(reviewCopy())
+      await slow
+
+      const afterOpen = harness.setStatus.mock.lastCall
+
+      expect([beforeOpen, afterOpen]).toStrictEqual([
+        [EXTENSION_ID, during],
+        [EXTENSION_ID, after],
+      ])
+    },
+  )
+
+  it('keeps the last investigation outcome when a review is cancelled while opening a copy', async () => {
+    const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(registerAuthorizer)
+    const { registry, streamSimple } = reviewRegistry(DENY)
+    const copying = Promise.withResolvers<void>()
+    const opened = Promise.withResolvers<ReturnType<typeof reviewCopy>>()
+    const harness = start(registry, true, {
+      copy: async () => {
+        copying.resolve()
+        return opened.promise
+      },
+    })
+    harness.start()
+    harness.ready()
+    const authorize = registerAuthorizer.mock.calls[0]?.[1]
+    await review(authorize)
+
+    streamSimple.mockReturnValueOnce({ result: async () => investigationReply('shell', { command: 'pwd' }) })
+    const pending = review(authorize)
+    await copying.promise
+    harness.emit('session_tree', {}, {})
+    opened.resolve(reviewCopy())
+    await pending
+
+    expect(harness.setStatus).toHaveBeenLastCalledWith(
+      EXTENSION_ID,
+      'auto-review ready · 2 denied · last review did not investigate',
+    )
   })
 
   it.each(['session_tree', 'session_compact', 'session_before_switch', 'session_before_fork'])(
@@ -354,7 +511,7 @@ describe('permission auto-review extension', () => {
   it.each([
     {
       preset: 'codex',
-      status: 'auto-review ready · no investigation: no tool route provides review copies',
+      status: 'auto-review ready · no tool route provides review copies',
       warnings: [
         [`[${EXTENSION_ID}] the reviewer cannot investigate local state: no tool route provides review copies`],
       ],
@@ -451,8 +608,10 @@ describe('permission auto-review extension', () => {
       })
     }
     if (failure === 'footer') {
-      harness.setStatus.mockImplementation(() => {
-        throw new Error('footer failed')
+      harness.setStatus.mockImplementation((_id: string, status: string | undefined) => {
+        if (status?.startsWith('auto-review ready · 1 denied') === true) {
+          throw new Error('footer failed')
+        }
       })
     }
     const authorize = registerAuthorizer.mock.calls[0]?.[1]

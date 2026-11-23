@@ -106,7 +106,8 @@ turn, and refuses further asks without review until the next run. The
 `claude-code` preset passes the ask that reaches its limit to you.
 
 The footer shows whether the reviewer is registered, and how many asks it has
-allowed, denied and deferred in the session.
+allowed, denied and deferred in the session. With the `codex` preset, the
+footer also shows the most recent investigation outcome.
 
 ## What counts as your instruction
 
