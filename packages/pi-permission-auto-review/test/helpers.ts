@@ -10,6 +10,7 @@ import type {
   PermissionQuery,
   PromptPermissionDetails,
 } from '@gotgenes/pi-permission-system'
+import type { SandboxCloseReport } from 'pi-bring-your-own-sandbox/api'
 import type { Mock } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -208,9 +209,7 @@ export const reviewWorkspace = {
 
 /** A session investigation whose sandbox answers every shell command with `stdout`, or which none can serve */
 export function fakeInvestigation(
-  sandbox:
-    | { stdout: string; beforeOpen?: Promise<void>; close?: () => Promise<{ confirmed: boolean }> }
-    | 'unavailable',
+  sandbox: { stdout: string; beforeOpen?: Promise<void>; close?: () => Promise<SandboxCloseReport> } | 'unavailable',
 ): Investigation {
   const investigation = new Investigation({} as never, {
     available: () => sandbox !== 'unavailable',
@@ -228,11 +227,10 @@ export function fakeInvestigation(
               durationMs: 1,
             }),
           } as never,
-          close: async () => ({
-            confirmed: sandbox === 'unavailable' || sandbox.close === undefined || (await sandbox.close()).confirmed,
-            recoveries: [],
-            failures: [],
-          }),
+          close: async () =>
+            sandbox === 'unavailable' || sandbox.close === undefined
+              ? { confirmed: true, recoveries: [], failures: [] }
+              : sandbox.close(),
         }
       },
     }),

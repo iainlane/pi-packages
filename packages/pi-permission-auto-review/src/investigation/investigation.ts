@@ -3,6 +3,7 @@ import type { Tool, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
 import type {
   ProcessResult,
   Sandbox,
+  SandboxCloseReport,
   SandboxContext,
   SandboxCopyOptions,
   SandboxHost,
@@ -10,16 +11,22 @@ import type {
 } from 'pi-bring-your-own-sandbox/api'
 import { Buffer } from 'node:buffer'
 import { isAbsolute, posix, relative, sep } from 'node:path'
-import { isSandboxError } from 'pi-bring-your-own-sandbox/api'
+import { isSandboxError, SandboxCleanupError } from 'pi-bring-your-own-sandbox/api'
 import { Type } from 'typebox'
 import * as v from 'valibot'
 import { reviewRoutes } from './review-route.js'
 
-type ReleaseOutcome = 'confirmed' | 'unconfirmed' | 'not-opened'
+interface UnconfirmedCleanup {
+  readonly failure: 'unconfirmed'
+  readonly details: {
+    readonly failures: readonly Pick<Error, 'name' | 'message'>[]
+    readonly recoveries: SandboxCloseReport['recoveries']
+  }
+}
 
-type CleanupFailure =
-  | { readonly failure: 'unconfirmed' }
-  | { readonly failure: 'timed-out'; readonly late: Promise<ReleaseOutcome> }
+type ReleaseOutcome = 'confirmed' | 'not-opened' | UnconfirmedCleanup
+
+type CleanupFailure = UnconfirmedCleanup | { readonly failure: 'timed-out'; readonly late: Promise<ReleaseOutcome> }
 
 const CLEANUP_TIMEOUT_MS = 10_000
 const CALL_TIMEOUT_MS = 10_000
@@ -103,6 +110,27 @@ interface CallOutcome {
   bytes: number
   /** Whether the sandbox refused the command */
   refused?: boolean
+}
+
+function unconfirmedCleanup(
+  failures: readonly Pick<Error, 'name' | 'message'>[],
+  recoveries: SandboxCloseReport['recoveries'] = [],
+): UnconfirmedCleanup {
+  return {
+    failure: 'unconfirmed',
+    details: { failures: failures.map(({ name, message }) => ({ name, message })), recoveries },
+  }
+}
+
+function unconfirmedCleanupError(error: unknown): UnconfirmedCleanup {
+  if (isSandboxError(error)) {
+    return unconfirmedCleanup([error], error.recovery === undefined ? [] : [error.recovery])
+  }
+  if (error instanceof Error) {
+    return unconfirmedCleanup([error])
+  }
+
+  return unconfirmedCleanup([{ name: 'Error', message: typeof error === 'string' ? error : 'Unknown error' }])
 }
 
 function describeError(error: unknown): string {
@@ -252,17 +280,20 @@ export class InvestigationRun {
 
     const release: Promise<ReleaseOutcome> = this.pending
       .then(
-        async copy => ((await copy.close()).confirmed ? ('confirmed' as const) : ('unconfirmed' as const)),
-        () => 'not-opened' as const,
+        async (copy): Promise<ReleaseOutcome> => {
+          const report = await copy.close()
+          return report.confirmed ? 'confirmed' : unconfirmedCleanup(report.failures, report.recoveries)
+        },
+        (error: unknown): ReleaseOutcome =>
+          isSandboxError(error, SandboxCleanupError) ? unconfirmedCleanupError(error) : 'not-opened',
       )
-      .catch(() => 'unconfirmed' as const)
+      .catch(unconfirmedCleanupError)
     const deadline = Promise.withResolvers<'timed-out'>()
     const timer = setTimeout(() => deadline.resolve('timed-out'), CLEANUP_TIMEOUT_MS)
     try {
       const outcome = await Promise.race([release, deadline.promise])
       if (outcome === 'timed-out') return { failure: outcome, late: release }
-      if (outcome === 'unconfirmed') return { failure: outcome }
-      return undefined
+      return typeof outcome === 'string' ? undefined : outcome
     } finally {
       clearTimeout(timer)
     }

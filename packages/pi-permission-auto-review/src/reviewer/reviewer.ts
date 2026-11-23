@@ -218,13 +218,18 @@ async function runReview(
     clearTimeout(timeout)
     const cleanup = await investigation?.close()
     if (cleanup !== undefined) {
-      log.review('auto_review.copy_cleanup', { requestId: details.requestId, failure: cleanup.failure })
+      log.review('auto_review.copy_cleanup', {
+        requestId: details.requestId,
+        failure: cleanup.failure,
+        ...(cleanup.failure === 'unconfirmed' ? cleanup.details : {}),
+      })
       if (cleanup.failure === 'timed-out') {
         void cleanup.late.then(outcome => {
           log.review('auto_review.copy_cleanup', {
             requestId: details.requestId,
             late: true,
             ...(outcome === 'not-opened' ? { opened: false } : { confirmed: outcome === 'confirmed' }),
+            ...(typeof outcome === 'string' ? {} : outcome.details),
           })
         })
       }

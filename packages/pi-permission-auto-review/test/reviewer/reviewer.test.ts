@@ -2,6 +2,8 @@ import type { LateUsage } from '../../src/statistics/calls.js'
 import type { ReviewReport } from '../../src/statistics/recorder.js'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
+import type { SandboxCloseReport } from 'pi-bring-your-own-sandbox/api'
+import { SandboxCleanupError, SandboxOperationError } from 'pi-bring-your-own-sandbox/api'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { POLICY_REVISION } from '../../src/presets/codex/policy.js'
 import {
@@ -659,6 +661,19 @@ describe('permission reviewer', () => {
   })
 
   describe('investigation', () => {
+    const recovery = {
+      kind: 'allocation',
+      id: 'fixture-copy',
+      instructions: 'Remove the fixture copy.',
+      lease: 'manual cleanup',
+    } as const
+    const failure = new SandboxOperationError({ operation: 'dispose' })
+    const report: SandboxCloseReport = { confirmed: false, recoveries: [recovery], failures: [failure] }
+    const reportDetails = {
+      recoveries: [recovery],
+      failures: [{ name: failure.name, message: failure.message }],
+    }
+
     const toolNames = (harness: ReturnType<typeof createHarness>): (string[] | undefined)[] =>
       harness.streamSimple.mock.calls.map(([, context]) =>
         (context as { tools?: { name: string }[] }).tools?.map(tool => tool.name),
@@ -696,19 +711,62 @@ describe('permission reviewer', () => {
     })
 
     it.each([
-      { failure: 'unconfirmed', close: async () => ({ confirmed: false }) },
-      { failure: 'timed-out', close: async () => new Promise<{ confirmed: boolean }>(() => {}) },
-    ])('preserves a denial when copy cleanup is $failure', async ({ failure, close }) => {
+      { scenario: 'unconfirmed', close: async () => report, details: reportDetails },
+      {
+        scenario: 'thrown',
+        close: async () => {
+          throw new Error('The copy close failed.')
+        },
+        details: { failures: [{ name: 'Error', message: 'The copy close failed.' }], recoveries: [] },
+      },
+    ])('preserves a denial and logs the details when copy cleanup is $scenario', async ({ close, details }) => {
       const harness = createHarness({
         investigation: fakeInvestigation({ stdout: 'ok', close }),
-        replies: [investigationReply('shell', { command: 'ls' }), reply(DENY)],
+        replies: [investigationReply('shell', { command: 'pwd' }), reply(DENY)],
       })
       const { verdict, entries } = await harness.authorize()
       expect({
         verdict: verdict.kind,
-        cleanup: entries.find(([event]) => event === 'auto_review.copy_cleanup')?.[1]?.['failure'],
-      }).toStrictEqual({ verdict: 'deny', cleanup: failure })
+        cleanup: entries.filter(([event]) => event === 'auto_review.copy_cleanup'),
+      }).toStrictEqual({
+        verdict: 'deny',
+        cleanup: [['auto_review.copy_cleanup', { requestId: 'request-1', failure: 'unconfirmed', ...details }]],
+      })
     })
+
+    it.each([undefined, recovery])(
+      'logs the SDK cleanup error from a rejected copy with recovery %j',
+      async recovery => {
+        const error = new SandboxCleanupError({ operation: 'dispose', ...(recovery === undefined ? {} : { recovery }) })
+        const opened = Promise.withResolvers<void>()
+        const harness = createHarness({
+          investigation: fakeInvestigation({ stdout: 'ok', beforeOpen: opened.promise }),
+          replies: [investigationReply('shell', { command: 'pwd' }), reply(DENY)],
+        })
+        const { verdict, entries } = harness.start()
+        await vi.advanceTimersByTimeAsync(0)
+        opened.reject(error)
+        await vi.runAllTimersAsync()
+
+        expect({
+          verdict: (await verdict).kind,
+          cleanup: entries.filter(([event]) => event === 'auto_review.copy_cleanup'),
+        }).toStrictEqual({
+          verdict: 'deny',
+          cleanup: [
+            [
+              'auto_review.copy_cleanup',
+              {
+                requestId: 'request-1',
+                failure: 'unconfirmed',
+                recoveries: recovery === undefined ? [] : [recovery],
+                failures: [{ name: error.name, message: error.message }],
+              },
+            ],
+          ],
+        })
+      },
+    )
 
     it('returns the verdict on timeout and records a later failed copy', async () => {
       const opened = Promise.withResolvers<void>()
@@ -732,22 +790,22 @@ describe('permission reviewer', () => {
     })
 
     it('logs an unconfirmed copy release that finishes after the verdict', async () => {
-      const release = Promise.withResolvers<{ confirmed: boolean }>()
+      const release = Promise.withResolvers<SandboxCloseReport>()
       const harness = createHarness({
         investigation: fakeInvestigation({ stdout: 'ok', close: async () => release.promise }),
         replies: [investigationReply('shell', { command: 'ls' }), reply(DENY)],
       })
       const { verdict, entries } = await harness.authorize()
-      release.resolve({ confirmed: false })
+      release.resolve(report)
       await vi.runAllTimersAsync()
       expect({
         verdict: verdict.kind,
-        cleanup: entries.filter(([event]) => event === 'auto_review.copy_cleanup').map(([, fields]) => fields),
+        cleanup: entries.filter(([event]) => event === 'auto_review.copy_cleanup'),
       }).toStrictEqual({
         verdict: 'deny',
         cleanup: [
-          { requestId: 'request-1', failure: 'timed-out' },
-          { requestId: 'request-1', late: true, confirmed: false },
+          ['auto_review.copy_cleanup', { requestId: 'request-1', failure: 'timed-out' }],
+          ['auto_review.copy_cleanup', { requestId: 'request-1', late: true, confirmed: false, ...reportDetails }],
         ],
       })
     })
