@@ -140,12 +140,16 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   registerManualApprovalTool(pi, manual)
   pi.events.on(PERMISSIONS_DECISION_CHANNEL, data => manual.decided(data as PermissionDecisionEvent))
 
-  function renderStatus(current: Generation): void {
+  function setFooterStatus(context: Pick<ExtensionContext, 'ui'>, status: string | undefined): void {
     try {
-      current.runtime.ui.setStatus(EXTENSION_ID, statusText(current, tally, investigationOutcome))
+      context.ui.setStatus(EXTENSION_ID, status)
     } catch {
       // The footer is a display; nothing that renders it may fail because of it
     }
+  }
+
+  function renderStatus(current: Generation): void {
+    setFooterStatus(current.runtime, statusText(current, tally, investigationOutcome))
   }
 
   function createGeneration(runtime: Generation['runtime'], config: AutoReviewConfig | undefined): Generation {
@@ -356,7 +360,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   pi.on('session_before_fork', cancelReviews)
 
   pi.on('session_shutdown', async (_event, ctx) => {
-    ctx.ui.setStatus(EXTENSION_ID, undefined)
+    setFooterStatus(ctx, undefined)
     retire(generation)
     generation = undefined
     sessionId = undefined

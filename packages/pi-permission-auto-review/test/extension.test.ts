@@ -302,6 +302,34 @@ describe('permission auto-review extension', () => {
     expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, undefined)
   })
 
+  it('retires the reviewer when clearing the footer throws at shutdown', async () => {
+    const dispose = vi.fn()
+    publish(vi.fn<PermissionsService['registerAuthorizer']>().mockReturnValue(dispose))
+    const harness = start()
+    harness.start()
+    harness.ready()
+    harness.setStatus.mockImplementation((_id: string, status: string | undefined) => {
+      if (status === undefined) throw new Error('footer failed')
+    })
+
+    const shutdown = await harness.shutdownAndWait().then(
+      () => 'finished',
+      (error: unknown) => error,
+    )
+
+    expect({
+      shutdown,
+      disposed: dispose.mock.calls,
+      footer: harness.setStatus.mock.lastCall,
+      footerResult: harness.setStatus.mock.results.at(-1)?.type,
+    }).toStrictEqual({
+      shutdown: 'finished',
+      disposed: [[]],
+      footer: [EXTENSION_ID, undefined],
+      footerResult: 'throw',
+    })
+  })
+
   function reviewCopy() {
     return {
       sandbox: {
