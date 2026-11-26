@@ -4,6 +4,7 @@ import type { ReviewConversation } from '../reviewer/conversation.js'
 import type { CallFailure, ModelCall } from '../reviewer/model-call.js'
 import type { SessionEntry, SessionProjection } from '@earendil-works/pi-coding-agent'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
+import type { DestinationDescription } from 'pi-bring-your-own-sandbox/consumer'
 import { CLAUDE_CODE_PRESET } from './claude-code/preset.js'
 import { CODEX_PRESET } from './codex/preset.js'
 
@@ -25,6 +26,7 @@ interface ReviewInput {
   /** The conversation a follow-up review continues, if one is open */
   conversation: ReviewConversation | undefined
   contextWindow: number
+  destination?: DestinationDescription | undefined
   /** Whether the model call offers investigation tools */
   investigation: boolean
 }

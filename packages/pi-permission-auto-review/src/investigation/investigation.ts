@@ -1,6 +1,7 @@
 import type { Tool, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import type {
+  DestinationDescription,
   ProcessResult,
   ReviewUnavailableReason,
   Sandbox,
@@ -350,6 +351,10 @@ export class InvestigationRun {
 
   get unavailableReason(): UnavailableReason | undefined {
     return this.unavailable
+  }
+
+  get destination(): DestinationDescription | undefined {
+    return this.source?.destination
   }
 
   get copyFailure(): CopyFailure | undefined {

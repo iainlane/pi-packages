@@ -16,6 +16,7 @@ import type {
   AuthorizerVerdict,
   PromptPermissionDetails,
 } from '@gotgenes/pi-permission-system'
+import type { DestinationDescription } from 'pi-bring-your-own-sandbox/consumer'
 import { PRESETS } from '../presets/presets.js'
 import { CallLog } from '../statistics/calls.js'
 import { createModelCall, raceWithSignal } from './model-call.js'
@@ -89,7 +90,12 @@ async function reviewCurrentEvidence(
   preset: Preset,
   details: PromptPermissionDetails,
   conversation: ReviewConversation | undefined,
-  options: { complete: ModelCall; contextWindow: number; investigation: boolean },
+  options: {
+    complete: ModelCall
+    contextWindow: number
+    investigation: boolean
+    destination: DestinationDescription | undefined
+  },
 ): Promise<AttemptResult> {
   const { config, context } = runtime
   let continued = conversation
@@ -110,6 +116,7 @@ async function reviewCurrentEvidence(
         contextFiles: runtime.contextFiles(),
         conversation: continued,
         contextWindow: options.contextWindow,
+        destination: options.destination,
         investigation: options.investigation,
       },
       options.complete,
@@ -167,8 +174,9 @@ async function runReview(
     const usage = { input: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, output: 0 }
     const { statistics } = runtime
     const calls = statistics === undefined ? undefined : new CallLog(late => statistics.late(late), resolved.derived)
-    if (preset.investigates && runtime.investigation !== undefined) {
-      investigation = runtime.investigation.forReview(signal, details)
+    const route = runtime.investigation?.forReview(signal, details)
+    if (preset.investigates && route !== undefined) {
+      investigation = route
       try {
         await raceWithSignal(investigation.negotiate(), signal)
       } catch (error) {
@@ -192,6 +200,7 @@ async function runReview(
     const outcome = await reviewCurrentEvidence(runtime, preset, details, conversation, {
       complete,
       contextWindow: model.contextWindow,
+      destination: route?.destination,
       investigation: available !== undefined,
     })
     const investigated =

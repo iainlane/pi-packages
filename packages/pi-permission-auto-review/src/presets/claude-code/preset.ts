@@ -23,13 +23,14 @@ export const CLAUDE_CODE_PRESET: Preset = {
   createLimiter: () => new DenialCounter(),
   investigates: false,
   async review(input, complete) {
-    const { config, branch, details, contextFiles, action } = input
+    const { config, branch, details, contextFiles, action, destination } = input
     const systemPrompt = buildSystemPrompt(config.autoMode, contextFiles)
     const prepared = prepareReview(input, { systemPrompt, reasoning: 'off', maxTokens: FAST_MAX_TOKENS }, after => {
       const rendered = renderTranscript(branch, details, after?.cursor, action)
 
       return {
-        content: after === undefined ? buildReviewMessage(rendered) : buildFollowUpMessage(rendered),
+        content:
+          after === undefined ? buildReviewMessage(rendered, destination) : buildFollowUpMessage(rendered, destination),
         transcript: rendered,
       }
     })
