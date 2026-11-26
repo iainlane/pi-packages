@@ -7,7 +7,13 @@ import type {
   PermissionsReadyEvent,
   PermissionsService,
 } from '@gotgenes/pi-permission-system'
-import type { SandboxCopy, ShellReviewSource } from 'pi-bring-your-own-sandbox/consumer'
+import type {
+  ReviewUnavailableReason,
+  SandboxCopy,
+  SandboxErrorInfo,
+  ShellReviewLookup,
+  ShellReviewSource,
+} from 'pi-bring-your-own-sandbox/consumer'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildSessionProjection, getAgentDir } from '@earendil-works/pi-coding-agent'
@@ -18,9 +24,11 @@ import {
 } from '@gotgenes/pi-permission-system'
 import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { inputDigest } from '../src/action/json.js'
 import { EXTENSION_ID } from '../src/config/config.js'
 import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
+import { POLICY_REVISION } from '../src/presets/codex/policy.js'
 import { STATISTICS_ENTRY_TYPE } from '../src/statistics/records.js'
 import { GlobalStatisticsStore } from '../src/statistics/store.js'
 import {
@@ -90,7 +98,7 @@ describe('permission auto-review extension', () => {
   function start(
     registry: ModelRegistry = reviewRegistry(DENY).registry,
     projectTrusted = true,
-    route?: Pick<ShellReviewSource, 'copy'>,
+    route?: Pick<ShellReviewSource, 'copy'> | ShellReviewLookup,
   ) {
     const handlers = new Map<string, Handler[]>()
     const eventHandlers = new Map<string, Handler[]>()
@@ -117,7 +125,11 @@ describe('permission auto-review extension', () => {
       negotiate: vi.fn(),
       hasShellReviewRoute: () => hasRoute,
       findShellReviewSource: () =>
-        route === undefined ? { ok: false, reason: 'unknown-call' } : { ok: true, source: reviewSource(route.copy) },
+        route === undefined
+          ? { ok: false, reason: 'unknown-call' }
+          : 'ok' in route
+            ? route
+            : { ok: true, source: reviewSource(route.copy) },
       recordEscalationDecision: vi.fn(),
     })
     permissionAutoReview(pi as unknown as ExtensionAPI)
@@ -312,7 +324,7 @@ describe('permission auto-review extension', () => {
     await review(registerAuthorizer.mock.calls[0]?.[1])
     expect(harness.setStatus).toHaveBeenLastCalledWith(
       EXTENSION_ID,
-      'auto-review ready · 1 denied · last review had no route for its call',
+      'auto-review ready · 1 denied · last review could not find its pending shell call',
     )
 
     harness.shutdown()
@@ -364,6 +376,102 @@ describe('permission auto-review extension', () => {
   }
 
   it.each([
+    ['unknown-call', 'last review could not find its pending shell call'],
+    ['unsupported-tool', 'last review used a tool without a shell review route'],
+    ['not-selected', 'last review had no selected sandbox for its call'],
+    ['destination-unavailable', 'last review could not resolve its execution destination'],
+    ['invalid-source', 'last review received an invalid review source'],
+    ['incompatible-protocol', 'last review found an incompatible BYOS review route'],
+    ['ambiguous', 'last review found multiple matching review sources'],
+  ] as const satisfies readonly (readonly [ReviewUnavailableReason, string])[])(
+    'reports SDK lookup reason %s',
+    async (reason, text) => {
+      const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+      publish(register)
+      const harness = start(undefined, true, { ok: false, reason })
+      harness.start()
+      harness.ready()
+      const { entry } = await review(register.mock.calls[0]?.[1])
+      await harness.run('', 'auto-stats')
+
+      expect({
+        footer: harness.setStatus.mock.lastCall,
+        log: entry?.[1]?.['investigationUnavailable'],
+        stats: String(harness.notify.mock.lastCall?.[0])
+          .split('\n')
+          .find(line => line.startsWith('Investigation:')),
+      }).toStrictEqual({
+        footer: [EXTENSION_ID, `auto-review ready · 1 denied · ${text}`],
+        log: reason,
+        stats: `Investigation: ${text}`,
+      })
+    },
+  )
+
+  it.each([
+    { failure: 'SDK refusal', name: 'UnsupportedSandboxPolicyError', requirement: 'network=prevented' },
+    { failure: 'unexpected error', name: 'TypeError', requirement: undefined },
+  ])(
+    'reports an unsuitable copy before offering tools when negotiation gives an $failure',
+    async ({ failure, name, requirement }) => {
+      const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+      publish(register)
+      const { registry, streamSimple } = reviewRegistry(DENY)
+      const copy = vi.fn<ShellReviewSource['copy']>()
+      const error: SandboxErrorInfo = Object.assign(new Error('provider message\u001B[2J'), {
+        name: 'UnsupportedSandboxPolicyError',
+        operation: 'acquire',
+        detail: { kind: 'access', property: 'network', value: 'prevented', reason: 'profile' },
+      } as const)
+      const negotiateCopy = vi.fn<ShellReviewSource['negotiateCopy']>(async () => {
+        if (failure === 'unexpected error') throw new TypeError('provider negotiation failed')
+        return { ok: false, error }
+      })
+      const harness = start(registry, true, { ok: true, source: { ...reviewSource(copy), negotiateCopy } })
+      harness.start()
+      harness.ready()
+      const { entry } = await review(register.mock.calls[0]?.[1])
+      await harness.run('', 'auto-stats')
+      const fields = entry?.[1]
+      const reason = 'last review found no suitable copy'
+
+      expect({
+        negotiated: negotiateCopy.mock.calls,
+        copy: copy.mock.calls,
+        tools: (streamSimple.mock.calls[0]?.[1] as { tools?: unknown } | undefined)?.tools,
+        footer: harness.setStatus.mock.lastCall,
+        stats: String(harness.notify.mock.lastCall?.[0])
+          .split('\n')
+          .find(line => line.startsWith('Investigation:')),
+        log: [
+          fields?.['investigationUnavailable'],
+          fields?.['copyErrorName'],
+          fields?.['copyErrorRequirement'],
+          fields?.['copyErrorMessage'],
+        ],
+      }).toStrictEqual({
+        negotiated: [
+          [
+            {
+              access: { network: 'prevented', hostUserData: 'prevented', hostWorkspaceWrites: 'prevented' },
+              capabilities: ['exec', 'files.read'],
+              shells: ['sh'],
+              processKinds: ['shell'],
+              exitStatus: 'guaranteed',
+              terminationScope: 'process-group',
+            },
+          ],
+        ],
+        copy: [],
+        tools: undefined,
+        footer: [EXTENSION_ID, `auto-review ready · 1 denied · ${reason}`],
+        stats: `Investigation: ${reason}`,
+        log: ['no-suitable-copy', name, requirement, undefined],
+      })
+    },
+  )
+
+  it.each([
     { investigation: 'unused', status: 'last review did not investigate', callsTool: false },
     { investigation: 'inspected', status: 'last review inspected a copy', callsTool: true },
     { investigation: 'failed to open', status: 'last review could not open a copy', callsTool: true },
@@ -376,7 +484,11 @@ describe('permission auto-review extension', () => {
       const providerError = 'provider could not open the copy\u001B[2J'
       const copy = vi.fn(async () => {
         if (investigation === 'failed to open') {
-          throw new Error(providerError)
+          throw Object.assign(new Error(providerError), {
+            name: 'UnsupportedSandboxPolicyError',
+            operation: 'acquire',
+            detail: { kind: 'access', property: 'network', value: 'prevented', reason: 'profile' },
+          } as const)
         }
 
         return reviewCopy()
@@ -414,8 +526,40 @@ describe('permission auto-review extension', () => {
         footer: [EXTENSION_ID, `auto-review ready · 1 denied · ${status}`],
         stats: `Investigation: ${status}`,
         copyCalls: callsTool ? [[expect.any(Object)]] : [],
-        logReason: investigation === 'failed to open' ? providerError : undefined,
+        logReason: investigation === 'failed to open' ? 'copy-open-failed' : undefined,
       })
+      if (investigation === 'failed to open') {
+        expect(entry).toStrictEqual([
+          'auto_review.decision',
+          {
+            actionDigest: inputDigest({ command: 'pnpm publish' }),
+            actionKind: 'shell',
+            answersOmitted: 0,
+            attempts: 1,
+            authorityEdited: false,
+            authorityFits: true,
+            contextSource: 'active-branch',
+            copyErrorMessage: providerError,
+            copyErrorName: 'UnsupportedSandboxPolicyError',
+            copyErrorRequirement: 'network=prevented',
+            durationMs: expect.any(Number) as unknown,
+            imagesOmitted: 0,
+            investigationBytes: 0,
+            investigationCalls: 1,
+            investigationUnavailable: 'copy-open-failed',
+            model: 'codex-auto-review',
+            outcome: 'deny',
+            policyRevision: POLICY_REVISION,
+            priorReviews: 0,
+            provenanceUncertain: false,
+            provider: 'openai',
+            requestId: 'request-1',
+            riskLevel: 'high',
+            usage: { cacheRead: 40, cacheWrite: 0, cacheWrite1h: 0, input: 100, output: 10 },
+            userApproval: 'unknown',
+          },
+        ])
+      }
     },
   )
 

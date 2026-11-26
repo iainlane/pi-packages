@@ -2,11 +2,14 @@ import type { Tool, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import type {
   ProcessResult,
+  ReviewUnavailableReason,
   Sandbox,
   SandboxCloseReport,
   SandboxClient,
   SandboxContext,
+  SandboxErrorInfo,
   SandboxRequirements,
+  ShellReviewLookup,
   ShellReviewSource,
 } from 'pi-bring-your-own-sandbox/consumer'
 import { Buffer } from 'node:buffer'
@@ -55,13 +58,61 @@ export type InvestigationAvailability = { available: true } | { available: false
 export type InvestigationOutcome =
   | { kind: 'inspected' }
   | { kind: 'unused' }
-  | { kind: 'unavailable'; reason: 'no-session-route' | 'no-call-route' | 'copy-open-failed' }
+  | { kind: 'unavailable'; reason: UnavailableReason }
+
+type UnavailableReason =
+  | ReviewUnavailableReason
+  | 'no-session-route'
+  | 'no-call-route'
+  | 'no-suitable-copy'
+  | 'copy-open-failed'
 
 const UNAVAILABLE_REASONS = {
   'no-session-route': 'no tool route provides review copies',
   'no-call-route': 'last review had no route for its call',
+  'no-suitable-copy': 'last review found no suitable copy',
   'copy-open-failed': 'last review could not open a copy',
-} satisfies Record<Extract<InvestigationOutcome, { kind: 'unavailable' }>['reason'], string>
+  'unknown-call': 'last review could not find its pending shell call',
+  'unsupported-tool': 'last review used a tool without a shell review route',
+  'not-selected': 'last review had no selected sandbox for its call',
+  'destination-unavailable': 'last review could not resolve its execution destination',
+  'invalid-source': 'last review received an invalid review source',
+  'incompatible-protocol': 'last review found an incompatible BYOS review route',
+  ambiguous: 'last review found multiple matching review sources',
+} satisfies Record<UnavailableReason, string>
+
+function failedRequirement(detail: SandboxErrorInfo['detail']): string | undefined {
+  switch (detail?.kind) {
+    case 'access':
+      return `${detail.property}=${detail.value}`
+    case 'capability':
+      return `${detail.field}=${detail.value}`
+    case 'policy':
+      return detail.reason
+    case 'path':
+      return `path:${detail.access}`
+    case 'declaration':
+    case 'config':
+    case 'request':
+    case undefined:
+      return undefined
+  }
+}
+
+interface CopyFailure {
+  copyErrorName: string
+  copyErrorRequirement?: string
+  copyErrorMessage?: string
+}
+
+function copyFailure(error: unknown): CopyFailure {
+  if (isSandboxError(error)) {
+    const requirement = failedRequirement(error.detail)
+    return { copyErrorName: error.name, ...(requirement !== undefined && { copyErrorRequirement: requirement }) }
+  }
+
+  return { copyErrorName: error instanceof Error ? error.name : 'UnknownError' }
+}
 
 export function formatInvestigationOutcome(outcome: InvestigationOutcome): string {
   switch (outcome.kind) {
@@ -229,10 +280,15 @@ export class Investigation {
   }
 
   async availability(): Promise<InvestigationAvailability> {
-    const available = this.context !== undefined && this.client.hasShellReviewRoute()
-    return Promise.resolve(
-      available ? { available: true } : { available: false, reason: UNAVAILABLE_REASONS['no-session-route'] },
-    )
+    try {
+      if (this.context !== undefined && this.client.hasShellReviewRoute()) {
+        return { available: true }
+      }
+    } catch (error) {
+      if (!isSandboxError(error)) throw error
+    }
+
+    return { available: false, reason: UNAVAILABLE_REASONS['no-session-route'] }
   }
 
   forReview(signal: AbortSignal, tool: ProposedTool): InvestigationRun {
@@ -251,7 +307,7 @@ export class Investigation {
     }
 
     const lookup = this.client.findShellReviewSource(context, { toolName, toolCallId })
-    return new InvestigationRun(signal, context.cwd, lookup.ok ? lookup.source : undefined)
+    return new InvestigationRun(signal, context.cwd, lookup)
   }
 }
 
@@ -264,20 +320,40 @@ export class InvestigationRun {
   private callCount = 0
   private refusalCount = 0
   private outputBytes = 0
-  unavailableReason: string | undefined
+  private unavailable: UnavailableReason | undefined
+  private failure: CopyFailure | undefined
 
   private readonly signal: AbortSignal
   private readonly life = new AbortController()
   private readonly cwd: string
   private readonly source: ShellReviewSource | undefined
 
-  constructor(signal: AbortSignal, cwd: string, source: ShellReviewSource | undefined) {
+  constructor(signal: AbortSignal, cwd: string, lookup: ShellReviewLookup | undefined) {
     this.signal = AbortSignal.any([signal, this.life.signal])
     this.cwd = cwd
-    this.source = source
-    if (source === undefined) {
-      this.unavailableReason = 'the proposed execution destination could not be established'
+    this.source = lookup?.ok === true ? lookup.source : undefined
+    this.unavailable = lookup?.ok === true ? undefined : (lookup?.reason ?? 'no-call-route')
+  }
+
+  async negotiate(): Promise<void> {
+    if (this.source === undefined) return
+
+    try {
+      const result = await this.source.negotiateCopy(COPY_REQUIREMENTS)
+      if (result.ok) return
+      this.failure = copyFailure(result.error)
+    } catch (error) {
+      this.failure = copyFailure(error)
     }
+    this.unavailable = 'no-suitable-copy'
+  }
+
+  get unavailableReason(): UnavailableReason | undefined {
+    return this.unavailable
+  }
+
+  get copyFailure(): CopyFailure | undefined {
+    return this.failure
   }
 
   async close(): Promise<CleanupFailure | undefined> {
@@ -311,14 +387,11 @@ export class InvestigationRun {
   }
 
   get outcome(): InvestigationOutcome | undefined {
-    if (this.source === undefined) {
-      return { kind: 'unavailable', reason: 'no-call-route' }
-    }
     if (this.usedCopy) {
       return { kind: 'inspected' }
     }
-    if (this.unavailableReason !== undefined) {
-      return { kind: 'unavailable', reason: 'copy-open-failed' }
+    if (this.unavailable !== undefined) {
+      return { kind: 'unavailable', reason: this.unavailable }
     }
 
     return this.pending === undefined ? { kind: 'unused' } : undefined
@@ -377,8 +450,12 @@ export class InvestigationRun {
       sandbox = copy.sandbox
     } catch (error) {
       this.signal.throwIfAborted()
-      this.unavailableReason = describeError(error)
-      return { text: `Investigation is unavailable: ${this.unavailableReason}`, isError: true, bytes: 0 }
+      this.unavailable = 'copy-open-failed'
+      this.failure = {
+        ...copyFailure(error),
+        copyErrorMessage: isSandboxError(error) || error instanceof Error ? error.message : 'Unknown error',
+      }
+      return { text: `Investigation is unavailable: ${describeError(error)}`, isError: true, bytes: 0 }
     }
     this.usedCopy = true
     const options = { signal: this.signal, timeoutMs: CALL_TIMEOUT_MS }

@@ -126,7 +126,7 @@ async function sleep(milliseconds: number, signal: AbortSignal): Promise<void> {
 }
 
 /** A provider is not bound to honour the abort signal promptly, so the timeout is enforced here */
-async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const onAbort = (): void => reject(abortError())
     if (signal.aborted) onAbort()

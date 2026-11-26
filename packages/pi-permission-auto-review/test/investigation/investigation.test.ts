@@ -389,7 +389,7 @@ describe('investigation', () => {
     expect({ operations, result, unavailableReason: run.unavailableReason, exhausted: run.exhausted }).toStrictEqual({
       operations: ['copy'],
       result: { isError: true, text: `Investigation is unavailable: ${reason}` },
-      unavailableReason: reason,
+      unavailableReason: 'copy-open-failed',
       exhausted: true,
     })
   })

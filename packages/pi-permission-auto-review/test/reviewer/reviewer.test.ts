@@ -899,12 +899,12 @@ describe('permission reviewer', () => {
       },
     ])('starts over when $description', async ({ before, replies, roles, tools }) => {
       const sandbox = fakeInvestigation({ stdout: 'ok' })
+      const unavailable = fakeInvestigation('unavailable')
       let available = before
       const harness = createHarness({
         config: { followUpReviews: 'always' },
         investigation: {
-          availability: async () => (available ? sandbox.availability() : { available: false, reason: 'gone' }),
-          forReview: (signal, details) => sandbox.forReview(signal, details),
+          forReview: (signal, details) => (available ? sandbox : unavailable).forReview(signal, details),
         },
         replies,
       })

@@ -18,7 +18,7 @@ import type {
 } from '@gotgenes/pi-permission-system'
 import { PRESETS } from '../presets/presets.js'
 import { CallLog } from '../statistics/calls.js'
-import { createModelCall } from './model-call.js'
+import { createModelCall, raceWithSignal } from './model-call.js'
 import { resolveReviewModel } from './model.js'
 import { captureSnapshot, validateSnapshot } from './snapshot.js'
 
@@ -46,8 +46,8 @@ export interface ReviewerRuntime {
   contextFiles: () => readonly ContextFile[]
   /** Aborted when the reviewer is replaced, the session ends or the session moves to other history; read at every review */
   sessionSignal: AbortSignal
-  /** Reports whether a review route exists and opens a copy on the first investigation call of each review */
-  investigation?: Pick<Investigation, 'availability' | 'forReview'>
+  /** Resolves the pending call and opens a copy on the first investigation call of each review */
+  investigation?: Pick<Investigation, 'forReview'>
   onInvestigation?: (outcome: InvestigationOutcome) => void
   /** Receives every verdict with the calls behind it */
   statistics?: ReviewStatistics
@@ -155,7 +155,6 @@ async function runReview(
   ])
 
   let investigation: InvestigationRun | undefined
-  let unavailableInSession: InvestigationOutcome | undefined
   try {
     if (signal.aborted) {
       return { kind: 'failed', failure: 'cancelled' }
@@ -168,17 +167,16 @@ async function runReview(
     const usage = { input: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, output: 0 }
     const { statistics } = runtime
     const calls = statistics === undefined ? undefined : new CallLog(late => statistics.late(late), resolved.derived)
-    let unavailable: string | undefined
     if (preset.investigates && runtime.investigation !== undefined) {
-      const status = await runtime.investigation.availability()
-      if (status.available) {
-        investigation = runtime.investigation.forReview(signal, details)
-        unavailable = investigation.unavailableReason
-      } else {
-        unavailable = status.reason
-        unavailableInSession = { kind: 'unavailable', reason: 'no-session-route' }
+      investigation = runtime.investigation.forReview(signal, details)
+      try {
+        await raceWithSignal(investigation.negotiate(), signal)
+      } catch (error) {
+        if (!signal.aborted) throw error
+        return { kind: 'failed', failure: timeoutController.signal.aborted ? 'timeout' : 'cancelled' }
       }
     }
+    const available = investigation?.unavailableReason === undefined ? investigation : undefined
     const complete = createModelCall({
       registry: context.modelRegistry,
       model,
@@ -188,25 +186,26 @@ async function runReview(
       timeoutSignal: timeoutController.signal,
       deadline,
       usage,
-      investigation: unavailable === undefined ? investigation : undefined,
+      investigation: available,
       calls,
     })
     const outcome = await reviewCurrentEvidence(runtime, preset, details, conversation, {
       complete,
       contextWindow: model.contextWindow,
-      investigation: investigation !== undefined && unavailable === undefined,
+      investigation: available !== undefined,
     })
     const investigated =
       investigation === undefined || investigation.calls === 0
         ? {}
         : { investigationCalls: investigation.calls, investigationBytes: investigation.bytes }
 
-    const unavailableReason = investigation?.unavailableReason ?? unavailable
+    const unavailableReason = investigation?.unavailableReason
     return {
       ...outcome,
       fields: {
         ...outcome.fields,
         ...investigated,
+        ...investigation?.copyFailure,
         ...(unavailableReason !== undefined && { investigationUnavailable: unavailableReason }),
       },
       usage,
@@ -234,7 +233,7 @@ async function runReview(
         })
       }
     }
-    const investigationOutcome = investigation?.outcome ?? unavailableInSession
+    const investigationOutcome = investigation?.outcome
     if (investigationOutcome !== undefined) {
       runtime.onInvestigation?.(investigationOutcome)
     }

@@ -235,28 +235,29 @@ export function fakeInvestigation(
 ): Investigation {
   const investigation = new Investigation({
     hasShellReviewRoute: () => sandbox !== 'unavailable',
-    findShellReviewSource: () => ({
-      ok: true,
-      source: reviewSource(async () => {
-        if (sandbox !== 'unavailable') await sandbox.beforeOpen
-        return {
-          sandbox: {
-            ...reviewWorkspace,
-            exec: async () => ({
-              exit: { kind: 'code', code: 0 },
-              stdout: new TextEncoder().encode(sandbox === 'unavailable' ? '' : sandbox.stdout),
-              stderr: new Uint8Array(),
-              omittedBytes: { stdout: 0, stderr: 0 },
-              durationMs: 1,
+    findShellReviewSource: () =>
+      sandbox === 'unavailable'
+        ? { ok: false, reason: 'not-selected' }
+        : {
+            ok: true,
+            source: reviewSource(async () => {
+              await sandbox.beforeOpen
+              return {
+                sandbox: {
+                  ...reviewWorkspace,
+                  exec: async () => ({
+                    exit: { kind: 'code', code: 0 },
+                    stdout: new TextEncoder().encode(sandbox.stdout),
+                    stderr: new Uint8Array(),
+                    omittedBytes: { stdout: 0, stderr: 0 },
+                    durationMs: 1,
+                  }),
+                } as never,
+                close: async () =>
+                  sandbox.close === undefined ? { confirmed: true, recoveries: [], failures: [] } : sandbox.close(),
+              }
             }),
-          } as never,
-          close: async () =>
-            sandbox === 'unavailable' || sandbox.close === undefined
-              ? { confirmed: true, recoveries: [], failures: [] }
-              : sandbox.close(),
-        }
-      }),
-    }),
+          },
   })
   investigation.start({ cwd: '/workspace', sessionManager: {} } as never)
 
@@ -322,7 +323,7 @@ interface ReviewerHarnessOptions {
   thinkingLevelMap?: ThinkingLevelMap
   /** Whether the session has a UI to show warnings in; true by default */
   hasUI?: boolean
-  investigation?: Pick<Investigation, 'availability' | 'forReview'>
+  investigation?: Pick<Investigation, 'forReview'>
   statistics?: ReviewStatistics
   sessionId?: string
   /** What the action capture answers for each ask; by default the bash command that the ask names */
