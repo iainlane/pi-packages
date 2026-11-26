@@ -146,20 +146,20 @@ The first investigation call opens a fresh private copy of the files that the
 proposed command will see: the host checkout or the workspace of the proposed
 sandbox allocation. The reviewer cannot run commands in the destination itself.
 The copy must prevent writes to the host workspace, deny networking and exclude
-host user data. The provider decides whether the copy accepts writes, which stay
-in the copy. The copy must also
-support file reads, POSIX shell execution, guaranteed exit status and
-process-group or workload termination. BYOS rejects a copy that does not meet
-these requirements. The provider may let the copy read operating-system and
-runtime files, which a native provider needs in order to start a shell. Each
-review closes its own copy on completion or cancellation. Forwarded asks defer
-before review. If no route claims a local call, the reviewer uses the transcript
-alone. If BYOS cannot open a suitable copy, the reviewer continues without
-investigation tools. The decision log records the reason. The footer and
-`/auto-stats` show the most recent investigation outcome. They show whether
-the review inspected a copy, did not investigate, or could not investigate,
-with a short reason. If a review ends while the copy is still opening, both
-displays keep the previous outcome.
+host user data. The provider decides whether the copy accepts writes. Changes
+stay in the copy. The copy must also support file reads, POSIX shell execution,
+guaranteed exit status and process-group or workload termination. The reviewer
+offers tools only after BYOS finds a profile that meets those requirements.
+Negotiation allocates no resources. The provider may let the copy read the host
+operating system and runtimes, which a native provider needs to start a shell.
+
+Each review closes its own copy on completion or cancellation. Forwarded asks
+defer before review. The reviewer uses the transcript alone if BYOS cannot
+identify a review source or negotiate a copy. The footer and `/auto-stats`
+describe the latest investigation outcome, with fixed text for each failure.
+The decision log records the reason code and, for a failed copy negotiation,
+the SDK error and failed requirement when available. If a review ends while its
+copy is still opening, the footer and `/auto-stats` keep the previous outcome.
 
 The reviewer has two tools. `shell` runs one command in the workspace root with
 a 10-second limit and 32 KiB of output. `read` reads a UTF-8 text file of up to
@@ -177,6 +177,29 @@ When a review inspects its copy, the next review starts a new conversation.
 An earlier file read or shell result can describe a different destination or
 an older version of the same file. Reviews based on the transcript alone can
 still continue when the available tools and transcript permit it.
+
+## Escalations
+
+Codex's `exec_command` accepts `sandbox_permissions: "require_escalated"` for
+unsandboxed execution and `justification` for the user-facing approval question.
+The Codex guardian and Pi's `codex` preset judge the pending command and its
+planned access. The agent's justification provides context. Only the user's
+messages can establish user authorization. See the
+[Codex shell tool schema][codex-shell-approval].
+
+BYOS Bash and PowerShell accept `escalate` for access properties and read or
+write paths. The broker selects a provider profile or the host before the
+decision. The `codex` preset sees the requested access, justification, effective
+command and destination. The host has no sandbox restrictions. When the review
+returns a current allow or deny, BYOS uses that verdict for the pending tool
+call. When the review defers, BYOS asks for confirmation if the permission gate
+lets the call proceed. The `claude-code` preset always defers an escalation.
+
+The decision log and `/auto-escalations [tool-call-id]` show the verdict and
+rationale under the tool call ID. When BYOS diagnostics are loaded, `/byos log`
+also shows the broker's outcomes, including its confirmation and expiry results.
+
+[codex-shell-approval]: https://github.com/openai/codex/blob/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/core/src/tools/handlers/shell_spec.rs#L225-L252
 
 ## Interaction answers
 

@@ -151,6 +151,19 @@ falls back to the transcript. The decision log records the reason.
 
 [investigation]: docs/codex-parity.md#investigation
 
+## Sandbox escalations
+
+BYOS Bash and PowerShell calls can use `escalate` and `justification` to request
+extra access. The `codex` preset reviews the destination and restrictions that
+BYOS chose for the call. A host destination runs without a sandbox. The agent
+writes the justification, which cannot authorize the request.
+
+The `claude-code` preset defers every BYOS escalation. When the permission gate
+lets a deferred call proceed, BYOS asks for confirmation.
+
+Run `/auto-escalations` to see the automatic decisions and rationales from the
+current session. Pass a tool call ID to filter the list.
+
 ## Running a refused command anyway
 
 When the reviewer refuses a shell command and Pi can show you a confirmation,
