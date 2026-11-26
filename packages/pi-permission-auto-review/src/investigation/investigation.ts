@@ -66,12 +66,14 @@ type UnavailableReason =
   | ReviewUnavailableReason
   | 'no-session-route'
   | 'no-call-route'
+  | 'lookup-failed'
   | 'no-suitable-copy'
   | 'copy-open-failed'
 
 const UNAVAILABLE_REASONS = {
   'no-session-route': 'no tool route provides review copies',
   'no-call-route': 'last review had no route for its call',
+  'lookup-failed': 'last review could not look up its shell review source',
   'no-suitable-copy': 'last review found no suitable copy',
   'copy-open-failed': 'last review could not open a copy',
   'unknown-call': 'last review could not find its pending shell call',
@@ -82,6 +84,14 @@ const UNAVAILABLE_REASONS = {
   'incompatible-protocol': 'last review found an incompatible BYOS review route',
   ambiguous: 'last review found multiple matching review sources',
 } satisfies Record<UnavailableReason, string>
+
+type ReviewLookup = ShellReviewLookup | { ok: false; reason: 'lookup-failed'; error: unknown }
+
+interface LookupFailure {
+  investigationUnavailable: 'lookup-failed'
+  lookupErrorName: string
+  lookupErrorMessage?: string
+}
 
 function failedRequirement(detail: SandboxErrorInfo['detail']): string | undefined {
   switch (detail?.kind) {
@@ -308,7 +318,12 @@ export class Investigation {
       return new InvestigationRun(signal, context?.cwd ?? '', undefined)
     }
 
-    const lookup = this.client.findShellReviewSource(context, { toolName, toolCallId })
+    let lookup: ShellReviewLookup
+    try {
+      lookup = this.client.findShellReviewSource(context, { toolName, toolCallId })
+    } catch (error) {
+      return new InvestigationRun(signal, context.cwd, { ok: false, reason: 'lookup-failed', error })
+    }
     return new InvestigationRun(signal, context.cwd, lookup)
   }
 }
@@ -316,6 +331,7 @@ export class Investigation {
 /** One review's tool calls, within its budget of calls and output */
 export class InvestigationRun {
   readonly tools: Tool[] = TOOLS
+  readonly lookupFailure?: LookupFailure
   private pending: ReturnType<ShellReviewSource['copy']> | undefined
   private closing: Promise<CleanupFailure | undefined> | undefined
   private usedCopy = false
@@ -330,11 +346,20 @@ export class InvestigationRun {
   private readonly cwd: string
   private readonly source: ShellReviewSource | undefined
 
-  constructor(signal: AbortSignal, cwd: string, lookup: ShellReviewLookup | undefined) {
+  constructor(signal: AbortSignal, cwd: string, lookup: ReviewLookup | undefined) {
     this.signal = AbortSignal.any([signal, this.life.signal])
     this.cwd = cwd
     this.source = lookup?.ok === true ? lookup.source : undefined
     this.unavailable = lookup?.ok === true ? undefined : (lookup?.reason ?? 'no-call-route')
+    if (lookup?.ok === false && lookup.reason === 'lookup-failed') {
+      const { error } = lookup
+      this.lookupFailure = {
+        investigationUnavailable: lookup.reason,
+        ...(isSandboxError(error)
+          ? { lookupErrorName: error.name, lookupErrorMessage: error.message }
+          : { lookupErrorName: error instanceof Error ? error.name : 'UnknownError' }),
+      }
+    }
   }
 
   async negotiate(): Promise<void> {

@@ -80,7 +80,7 @@ describe('permission auto-review extension', () => {
 
   /** A registry whose every model answers `reply`, so a reviewer's decisions are observable */
   function reviewRegistry(verdict: string) {
-    const streamSimple = vi.fn((_model: unknown, _context: { systemPrompt: string }) => ({
+    const streamSimple = vi.fn((_model: unknown, _context: { systemPrompt: string; tools?: unknown }) => ({
       result: async (): Promise<AssistantMessage> =>
         reply(verdict, 'stop', { input: 0, output: 0, cacheRead: 0, totalTokens: 0 }),
     }))
@@ -110,6 +110,13 @@ describe('permission auto-review extension', () => {
     const commands = new Map<string, Omit<RegisteredCommand, 'name' | 'sourceInfo'>>()
     const appendEntry = vi.fn<(type: string, data: unknown) => void>()
     const recordEscalationDecision = vi.fn<SandboxClient['recordEscalationDecision']>()
+    const findShellReviewSource = vi.fn<SandboxClient['findShellReviewSource']>(() =>
+      route === undefined
+        ? { ok: false, reason: 'unknown-call' }
+        : 'ok' in route
+          ? route
+          : { ok: true, source: reviewSource(route.copy) },
+    )
     const add = (target: Map<string, Handler[]>, name: string, handler: Handler): void => {
       target.set(name, [...(target.get(name) ?? []), handler])
     }
@@ -130,12 +137,7 @@ describe('permission auto-review extension', () => {
       get: vi.fn(),
       negotiate: vi.fn(),
       hasShellReviewRoute: () => hasRoute,
-      findShellReviewSource: () =>
-        route === undefined
-          ? { ok: false, reason: 'unknown-call' }
-          : 'ok' in route
-            ? route
-            : { ok: true, source: reviewSource(route.copy) },
+      findShellReviewSource,
       recordEscalationDecision,
     })
     permissionAutoReview(pi as unknown as ExtensionAPI)
@@ -183,6 +185,7 @@ describe('permission auto-review extension', () => {
       appendEntry,
       sessionEntries,
       recordEscalationDecision,
+      findShellReviewSource,
       setStatus,
       ready(sessionId: string | null = SESSION_ID) {
         for (const handler of eventHandlers.get(PERMISSIONS_READY_CHANNEL) ?? []) {
@@ -672,6 +675,122 @@ describe('permission auto-review extension', () => {
       })
     },
   )
+
+  it.each([
+    {
+      error: Object.assign(new Error('The sandbox session is closing.'), {
+        name: 'SandboxSessionClosingError',
+        operation: 'acquire',
+      } as const),
+      name: 'SandboxSessionClosingError',
+      message: 'The sandbox session is closing.',
+    },
+    { error: new TypeError('Internal provider details.'), name: 'TypeError', message: undefined },
+  ])('reviews an ordinary call from the transcript when lookup throws $name', async ({ error, name, message }) => {
+    const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(register)
+    const { registry, streamSimple } = reviewRegistry(
+      '{"outcome":"allow","rationale":"The user permitted the action."}',
+    )
+    const harness = start(registry)
+    harness.findShellReviewSource.mockImplementationOnce(() => {
+      throw error
+    })
+    const input = { command: 'pwd' }
+    harness.start(input)
+    harness.ready()
+    const { verdict, entry } = await review(register.mock.calls[0]?.[1])
+    await harness.run('', 'auto-stats')
+    const text = 'last review could not look up its shell review source'
+    expect({
+      verdict,
+      modelTools: streamSimple.mock.calls.map(([, context]) => context.tools),
+      footer: harness.setStatus.mock.lastCall,
+      stats: String(harness.notify.mock.lastCall?.[0])
+        .split('\n')
+        .find(line => line.startsWith('Investigation:')),
+      entry,
+    }).toStrictEqual({
+      verdict: { kind: 'allow' },
+      modelTools: [undefined],
+      footer: [EXTENSION_ID, `auto-review ready · 1 allowed · ${text}`],
+      stats: `Investigation: ${text}`,
+      entry: [
+        'auto_review.decision',
+        {
+          actionDigest: inputDigest(input),
+          actionKind: 'shell',
+          answersOmitted: 0,
+          attempts: 1,
+          authorityEdited: false,
+          authorityFits: true,
+          contextSource: 'active-branch',
+          durationMs: expect.any(Number) as unknown,
+          imagesOmitted: 0,
+          investigationUnavailable: 'lookup-failed',
+          ...(message === undefined ? {} : { lookupErrorMessage: message }),
+          lookupErrorName: name,
+          model: 'codex-auto-review',
+          outcome: 'allow',
+          policyRevision: POLICY_REVISION,
+          priorReviews: 0,
+          provenanceUncertain: false,
+          provider: 'openai',
+          requestId: 'request-1',
+          riskLevel: 'low',
+          usage: { cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, input: 0, output: 0 },
+          userApproval: 'unknown',
+        },
+      ],
+    })
+  })
+
+  it('defers an escalated call when lookup throws', async () => {
+    const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(register)
+    const { registry, streamSimple } = reviewRegistry(DENY)
+    const harness = start(registry)
+    harness.findShellReviewSource.mockImplementationOnce(() => {
+      throw new TypeError('Internal provider details.')
+    })
+    const { input } = escalationFixture()
+    harness.start(input)
+    harness.ready()
+    const { verdict, entry } = await review(register.mock.calls[0]?.[1])
+
+    expect({
+      verdict,
+      modelCalls: streamSimple.mock.calls,
+      decisions: harness.recordEscalationDecision.mock.calls,
+      ledger: harness.appendEntry.mock.calls.filter(
+        ([type]) => type === 'pi-permission-auto-review:escalation-decision.v1',
+      ),
+      entry,
+    }).toStrictEqual({
+      verdict: { kind: 'defer' },
+      modelCalls: [],
+      decisions: [],
+      ledger: [],
+      entry: [
+        'auto_review.decision',
+        {
+          actionDigest: inputDigest(input),
+          actionKind: 'shell',
+          contextSource: 'active-branch',
+          durationMs: expect.any(Number) as unknown,
+          errorCategory: 'escalation-source-unavailable',
+          investigationUnavailable: 'lookup-failed',
+          lookupErrorName: 'TypeError',
+          model: 'codex-auto-review',
+          outcome: 'defer',
+          policyRevision: POLICY_REVISION,
+          provider: 'openai',
+          requestId: 'request-1',
+          toolCallId: 'call-1',
+        },
+      ],
+    })
+  })
 
   it.each([
     { failure: 'SDK refusal', name: 'UnsupportedSandboxPolicyError', requirement: 'network=prevented' },

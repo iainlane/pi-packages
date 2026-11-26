@@ -188,16 +188,19 @@ async function runReview(
       (action.toolName === 'bash' || action.toolName === 'powershell') &&
       action.input['escalate'] !== undefined
     const toolCallId = 'toolCallId' in action ? action.toolCallId : undefined
-    const escalationFields = (escalation !== undefined || requested) && toolCallId !== undefined ? { toolCallId } : {}
+    const routeFields = {
+      ...route?.lookupFailure,
+      ...((escalation !== undefined || requested) && toolCallId !== undefined && { toolCallId }),
+    }
     if ((escalation !== undefined || requested) && !preset.decidesEscalations) {
-      return { kind: 'failed', failure: 'escalation-preset-deferred', fields: escalationFields }
+      return { kind: 'failed', failure: 'escalation-preset-deferred', fields: routeFields }
     }
     if ((requested && escalation === undefined) || (escalation !== undefined && escalation.toolCallId !== toolCallId)) {
-      return { kind: 'failed', failure: 'escalation-source-unavailable', fields: escalationFields }
+      return { kind: 'failed', failure: 'escalation-source-unavailable', fields: routeFields }
     }
     const resolved = resolveReviewModel(context.modelRegistry, config)
     if (!resolved.ok) {
-      return { kind: 'failed', failure: resolved.category, fields: escalationFields }
+      return { kind: 'failed', failure: resolved.category, fields: routeFields }
     }
     const model = resolved.value
     const usage = { input: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, output: 0 }
@@ -212,7 +215,7 @@ async function runReview(
         return {
           kind: 'failed',
           failure: timeoutController.signal.aborted ? 'timeout' : 'cancelled',
-          fields: escalationFields,
+          fields: routeFields,
         }
       }
     }
@@ -247,7 +250,7 @@ async function runReview(
       ...(outcome.kind !== 'failed' && escalation !== undefined && { escalation: { request: escalation, signal } }),
       fields: {
         ...outcome.fields,
-        ...escalationFields,
+        ...routeFields,
         ...investigated,
         ...investigation?.copyFailure,
         ...(unavailableReason !== undefined && { investigationUnavailable: unavailableReason }),
