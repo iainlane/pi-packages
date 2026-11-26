@@ -278,8 +278,8 @@ importers:
   packages/pi-permission-auto-review:
     dependencies:
       pi-bring-your-own-sandbox:
-        specifier: github:underwhelmingperformance/pi-bring-your-own-sandbox#dafe8e3820b59ca8c5e5c774fadc7e39a5f702af&path:/packages/sdk
-        version: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))
+        specifier: github:underwhelmingperformance/pi-bring-your-own-sandbox#caf09630558859d62c34b3242db865756b80bec3&path:/packages/sdk
+        version: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/caf09630558859d62c34b3242db865756b80bec3#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))
     devDependencies:
       '@earendil-works/pi-ai':
         specifier: 1.5.0
@@ -2600,8 +2600,8 @@ packages:
     resolution: {integrity: sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==}
     engines: {node: '>=8'}
 
-  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af#path:/packages/sdk:
-    resolution: {gitHosted: true, integrity: sha512-YsCXx3IMM24TYUzgQTa1A/SZthXc8jB2qYDX60NJ8d2CIBXWO1FqdrOmD/6IOdnqQ5Nsc7uU4DS+RE5SVqB9Ug==, path: /packages/sdk, tarball: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af}
+  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/caf09630558859d62c34b3242db865756b80bec3#path:/packages/sdk:
+    resolution: {gitHosted: true, integrity: sha512-V4/COqGKHOhD8NGywseeWLKCQLAlJBixbP3CdAl+EYyp+dHheUDGKZHm9ieYxd+4JgWZt3/RBO+JChD3k0FOcQ==, path: /packages/sdk, tarball: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/caf09630558859d62c34b3242db865756b80bec3}
     version: 0.0.0
     engines: {node: '>=24'}
     peerDependencies:
@@ -2664,6 +2664,10 @@ packages:
   quote-js-string@0.1.0:
     resolution: {integrity: sha512-Y3NoRtprEEZQD8RfxMCfS0ZTqc4e+i18OrXEXAvpM6TfC/3y+0L5rNbZiSnbBBEkDfFzbpd8o+cE8q3/anjMGA==}
     engines: {node: '>=22'}
+
+  re2js@2.10.0:
+    resolution: {integrity: sha512-/P6FNnLbHjXJMRF1dPoZoVTyHvFcuVhbDpzml9DPMlbeErYlZ18GueAaG9GhYhAm/9AN7i7Y6crmDrLX0DeJ4Q==}
+    engines: {node: '>=20.0.0'}
 
   refa@0.12.1:
     resolution: {integrity: sha512-J8rn6v4DBb2nnFqkqwy6/NnTYMcgLA+sLr0iIO41qpv0n+ngb7ksag2tMRl0inb1bbO/esUwzW1vbJi7K0sI0g==}
@@ -5267,9 +5271,11 @@ snapshots:
 
   path-key@3.1.1: {}
 
-  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))):
+  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/caf09630558859d62c34b3242db865756b80bec3#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))):
     dependencies:
       '@earendil-works/pi-coding-agent': 1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7)
+      ignore: 7.0.14
+      re2js: 2.10.0
       typebox: 1.4.3
     optionalDependencies:
       vitest: 5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))
@@ -5321,6 +5327,8 @@ snapshots:
   quickjs-wasi@3.6.2: {}
 
   quote-js-string@0.1.0: {}
+
+  re2js@2.10.0: {}
 
   refa@0.12.1:
     dependencies:

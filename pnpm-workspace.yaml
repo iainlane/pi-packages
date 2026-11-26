@@ -24,5 +24,6 @@ catalogs:
 allowBuilds:
   '@google/genai': true
   esbuild: true
+  'pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/caf09630558859d62c34b3242db865756b80bec3#path:/packages/sdk': true
   protobufjs: true
   tree-sitter-bash: true

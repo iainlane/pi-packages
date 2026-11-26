@@ -20,10 +20,10 @@ flags are out of scope.
 
 [codex-release]: https://github.com/openai/codex/tree/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/ext/guardian-reviewer
 
-The sandbox SDK is pinned to [BYOS `dafe8e3`][byos]. Load a provider extension
+The sandbox SDK is pinned to [BYOS `caf0963`][byos]. Load a provider extension
 separately; the SDK dependency does not activate a provider.
 
-[byos]: https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tree/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af/packages/sdk
+[byos]: https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tree/caf09630558859d62c34b3242db865756b80bec3/packages/sdk
 
 ## What the host gives an authorizer
 

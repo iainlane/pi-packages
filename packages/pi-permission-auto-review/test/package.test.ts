@@ -26,19 +26,27 @@ it('ships the sandbox SDK without bundling host-provided packages', () => {
         file =>
           file.startsWith('package/node_modules/') &&
           (file.endsWith('/package.json') ||
-            /^package\/node_modules\/pi-bring-your-own-sandbox\/src\/(?:api|consumer|contracts|pi-tools|provider|testing)\.ts$/.test(
+            /^package\/node_modules\/pi-bring-your-own-sandbox\/dist\/(?:(?:consumer|embedding-host|pi-tools|provider|testing)\.(?:js|d\.ts)|protocol-build\.json)$/.test(
               file,
             )),
       )
       .toSorted()
 
     expect(packageFiles).toStrictEqual([
+      'package/node_modules/ignore/package.json',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/consumer.d.ts',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/consumer.js',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/embedding-host.d.ts',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/embedding-host.js',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/pi-tools.d.ts',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/pi-tools.js',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/protocol-build.json',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/provider.d.ts',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/provider.js',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/testing.d.ts',
+      'package/node_modules/pi-bring-your-own-sandbox/dist/testing.js',
       'package/node_modules/pi-bring-your-own-sandbox/package.json',
-      'package/node_modules/pi-bring-your-own-sandbox/src/consumer.ts',
-      'package/node_modules/pi-bring-your-own-sandbox/src/contracts.ts',
-      'package/node_modules/pi-bring-your-own-sandbox/src/pi-tools.ts',
-      'package/node_modules/pi-bring-your-own-sandbox/src/provider.ts',
-      'package/node_modules/pi-bring-your-own-sandbox/src/testing.ts',
+      'package/node_modules/re2js/package.json',
     ])
   } finally {
     rmSync(directory, { recursive: true, force: true })
