@@ -1,4 +1,5 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
+import type { EscalationDestination } from 'pi-bring-your-own-sandbox/consumer'
 import { buildSessionProjection } from '@earendil-works/pi-coding-agent'
 import { expect, it } from 'vitest'
 import { DEFAULT_CONFIG } from '../../../src/config/config.js'
@@ -87,4 +88,46 @@ it('includes the destination as data in both sandbox review prompts', async () =
   ).toStrictEqual(prompts.map(() => ({ destination: evidence, literalLabel: false, treatment: true })))
   await expect(prompts[0]).toMatchFileSnapshot('./__snapshots__/sandbox-review-prompt.txt')
   await expect(prompts[1]).toMatchFileSnapshot('./__snapshots__/sandbox-follow-up-prompt.txt')
+})
+
+it.each(['provider', 'host'] as const)('shows the effective restrictions for a %s escalation', async kind => {
+  const action = shellAction('git push --tags', 'call-2')
+  const policy =
+    kind === 'host'
+      ? ({
+          hostWorkspaceWrites: true,
+          network: true,
+          hostUserData: 'read-write',
+          hostSystemFiles: 'read-write',
+        } as const)
+      : ({ hostWorkspaceWrites: false, network: true, hostUserData: 'denied', hostSystemFiles: 'denied' } as const)
+  const destination: EscalationDestination =
+    kind === 'host'
+      ? { kind, policy, effectiveRestrictions: 'none' }
+      : {
+          kind,
+          policy,
+          providerId: 'package-fixture',
+          effectiveRestrictions: 'Network allowed, host workspace and user data protected',
+        }
+  const prompt = buildReviewPrompt(
+    DEFAULT_CONFIG,
+    renderTranscript(BRANCH),
+    DETAILS,
+    action,
+    {
+      providerId: kind === 'host' ? 'host' : 'package-fixture',
+      label: kind === 'host' ? 'Host' : 'Package fixture',
+      policy,
+    },
+    {
+      toolCallId: 'call-2',
+      command: 'git push --tags',
+      justification: 'This command needs network access.',
+      access: { network: 'needed', paths: { read: ['fixture.json'] } },
+      destination,
+    },
+  ).userPrompt
+
+  await expect(prompt).toMatchFileSnapshot(`./__snapshots__/${kind}-escalation-prompt.txt`)
 })

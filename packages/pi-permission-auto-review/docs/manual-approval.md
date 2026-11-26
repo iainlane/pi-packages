@@ -18,6 +18,10 @@ Only refusals by the reviewer offer a reference. Refusals by static rules or by
 the denial limit, review failures, forwarded subagent asks and calls whose
 input was not captured do not.
 
+Manual approval applies to ordinary shell calls. BYOS binds each escalation
+decision to its tool call ID, destination and restrictions. Replaying an
+escalated call would create a new call ID and require a new BYOS decision.
+
 ## What you see
 
 The confirmation shows the tool, the working directory and the command first,

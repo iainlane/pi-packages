@@ -160,6 +160,10 @@ last. Approving runs the captured command once, through the normal permission
 checks; rejecting stops the agent retrying it until you give new direction.
 See [manual approval][manual-approval].
 
+Manual approval applies to ordinary shell calls. BYOS binds each escalation
+decision to its tool call ID, destination and restrictions. A replay would
+be a new escalation that BYOS would need to decide separately.
+
 [manual-approval]: docs/manual-approval.md
 
 ## Statistics

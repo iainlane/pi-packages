@@ -4,7 +4,7 @@ import type { ReviewConversation } from '../reviewer/conversation.js'
 import type { CallFailure, ModelCall } from '../reviewer/model-call.js'
 import type { SessionEntry, SessionProjection } from '@earendil-works/pi-coding-agent'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
-import type { DestinationDescription } from 'pi-bring-your-own-sandbox/consumer'
+import type { DestinationDescription, EscalationRequest } from 'pi-bring-your-own-sandbox/consumer'
 import { CLAUDE_CODE_PRESET } from './claude-code/preset.js'
 import { CODEX_PRESET } from './codex/preset.js'
 
@@ -27,6 +27,7 @@ interface ReviewInput {
   conversation: ReviewConversation | undefined
   contextWindow: number
   destination?: DestinationDescription | undefined
+  escalation?: EscalationRequest | undefined
   /** Whether the model call offers investigation tools */
   investigation: boolean
 }
@@ -38,8 +39,14 @@ export type ReviewFailure = CallFailure | 'authority-edited' | 'authority-over-b
 export type ReviewFields = Record<string, string | number | boolean>
 
 export type ReviewOutcome =
-  | { kind: 'allow'; fields: ReviewFields; conversation: ReviewConversation | undefined }
-  | { kind: 'deny'; reason: string; fields: ReviewFields; conversation: ReviewConversation | undefined }
+  | { kind: 'allow'; rationale?: string; fields: ReviewFields; conversation: ReviewConversation | undefined }
+  | {
+      kind: 'deny'
+      reason: string
+      rationale?: string
+      fields: ReviewFields
+      conversation: ReviewConversation | undefined
+    }
   | { kind: 'failed'; failure: ReviewFailure; fields: ReviewFields }
 
 export type DenialLimit = 'consecutive' | 'total'
@@ -62,6 +69,7 @@ export interface Preset {
   createLimiter: () => DenialLimiter
   /** Whether the reviewer may inspect local state through a sandbox */
   investigates: boolean
+  decidesEscalations: boolean
   review: (input: ReviewInput, complete: ModelCall) => Promise<ReviewOutcome>
 }
 

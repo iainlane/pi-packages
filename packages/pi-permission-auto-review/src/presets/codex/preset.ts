@@ -19,8 +19,9 @@ export const CODEX_PRESET: Preset = {
   builtInRules: BUILT_IN_RULES,
   createLimiter: () => new DenialCircuitBreaker(),
   investigates: true,
+  decidesEscalations: true,
   async review(input, complete) {
-    const { config, branch, projection, details, action, contextWindow, destination } = input
+    const { config, branch, projection, details, action, contextWindow, destination, escalation } = input
     const systemPrompt = buildSystemPrompt(config, input.investigation)
     // The earlier reviews saw text that a later context edit or compaction may have removed
     const cursorIndex =
@@ -39,19 +40,22 @@ export const CODEX_PRESET: Preset = {
         if (after !== undefined) {
           const delta = renderTranscript(branch, projection, { from: after.entryIndex + 1 })
 
-          return { content: buildFollowUpPrompt(delta, details, action, destination), transcript: delta }
+          return { content: buildFollowUpPrompt(delta, details, action, destination, escalation), transcript: delta }
         }
         const full = renderTranscript(branch, projection)
         const excess = (content: string): number =>
           approximateTokens(systemPrompt + content) + OUTPUT_RESERVE_TOKENS - contextWindow
-        let rendered = { content: buildUserPrompt(full, details, action, destination), transcript: full }
+        let rendered = { content: buildUserPrompt(full, details, action, destination, escalation), transcript: full }
         let budget = full.tokens - excess(rendered.content)
         // Like Codex, leave out other records and then shorten long user evidence before giving up on a review that
         // would not fit the model. The estimate of the whole prompt differs a little from the sum of its records, so
         // measure again after each try
         for (let attempt = 0; attempt < 3 && excess(rendered.content) > 0 && budget > 0; attempt += 1) {
           const shortened = renderTranscript(branch, projection, { budget })
-          rendered = { content: buildUserPrompt(shortened, details, action, destination), transcript: shortened }
+          rendered = {
+            content: buildUserPrompt(shortened, details, action, destination, escalation),
+            transcript: shortened,
+          }
           if (!shortened.manifest.authorityFits) {
             break
           }
@@ -69,7 +73,7 @@ export const CODEX_PRESET: Preset = {
     if (!manifest.authorityFits) {
       return { kind: 'failed', failure: 'authority-over-budget', fields }
     }
-    const result = await complete(request, parseReviewAssessment)
+    const result = await complete(request, text => parseReviewAssessment(text, escalation !== undefined))
     if (!result.ok) {
       return { kind: 'failed', failure: result.failure, fields }
     }
@@ -87,13 +91,14 @@ export const CODEX_PRESET: Preset = {
     // Under a key naming an authorization, the review log would mask the grade
     const graded = { ...fields, riskLevel: assessment.riskLevel, userApproval: assessment.userAuthorization }
     if (assessment.outcome === 'allow') {
-      return { kind: 'allow', fields: graded, conversation: next }
+      return { kind: 'allow', rationale: assessment.rationale, fields: graded, conversation: next }
     }
 
     // The host already prefixes its own attribution sentence, so this carries the why, the two grades and upstream's
     // instruction against working around the denial
     return {
       kind: 'deny',
+      rationale: assessment.rationale,
       reason: `${truncateToCharacters(assessment.rationale, MAX_RATIONALE_CHARACTERS)} (risk: ${assessment.riskLevel}, user authorization: ${assessment.userAuthorization}). ${REJECTION_INSTRUCTIONS}`,
       fields: graded,
       conversation: next,

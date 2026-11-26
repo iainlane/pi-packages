@@ -25,6 +25,7 @@ import { ActionCapture } from './action/capture.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
+import { appendEscalationDecision } from './escalation/decisions.js'
 import { formatInvestigationOutcome, Investigation } from './investigation/investigation.js'
 import { ManualApprovalController } from './manual/controller.js'
 import { registerManualApprovalTool } from './manual/tool.js'
@@ -104,7 +105,8 @@ function statusText(current: Generation, tally: Tally, investigation: Investigat
 export default function permissionAutoReview(pi: ExtensionAPI): void {
   const actions = new ActionCapture(pi)
   const provenance = new UserMessageProvenance(pi)
-  const investigation = new Investigation(createSandboxClient(pi, import.meta.filename))
+  const sandbox = createSandboxClient(pi, import.meta.filename)
+  const investigation = new Investigation(sandbox)
   const recorder = new StatisticsRecorder(pi, {
     directory: () => join(getAgentDir(), 'extensions', EXTENSION_ID, 'statistics'),
   })
@@ -170,6 +172,10 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
             investigation,
             onInvestigation: outcome => {
               latestInvestigation = outcome
+            },
+            escalation: {
+              record: (request, decision) => sandbox.recordEscalationDecision(runtime, request, decision),
+              append: entry => appendEscalationDecision(pi, entry),
             },
             statistics: recorder.sink(),
             onRefusal: (action, refusal, snapshot) => manual.refuse(action, refusal, snapshot),

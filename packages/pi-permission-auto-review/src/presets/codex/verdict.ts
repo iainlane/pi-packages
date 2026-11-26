@@ -1,6 +1,8 @@
 import type { JsonSchema } from '../../reviewer/output-format.js'
 import { toJsonSchema } from '@valibot/to-json-schema'
 import * as v from 'valibot'
+import { ESCALATION_RATIONALE_LIMIT } from '../../escalation/decisions.js'
+import { truncateToCharacters } from '../../text.js'
 
 const assessmentPayloadSchema = v.strictObject({
   risk_level: v.optional(v.picklist(['low', 'medium', 'high', 'critical'])),
@@ -8,6 +10,7 @@ const assessmentPayloadSchema = v.strictObject({
   outcome: v.picklist(['allow', 'deny']),
   rationale: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_000))),
 })
+const rationaleShape = v.object({ rationale: v.string() })
 
 /** The verdict's shape for a provider's native JSON format. APIs differ in the string bounds that they accept, so only the local check applies those */
 export const REVIEW_ASSESSMENT_SCHEMA: JsonSchema = (() => {
@@ -43,8 +46,17 @@ function parseJsonObject(text: string): unknown {
   }
 }
 
-export function parseReviewAssessment(text: string): ReviewAssessment {
-  const payload = v.parse(assessmentPayloadSchema, parseJsonObject(text))
+export function parseReviewAssessment(text: string, requiresRationale = false): ReviewAssessment {
+  const input = parseJsonObject(text)
+  const payload = v.parse(
+    assessmentPayloadSchema,
+    requiresRationale && v.is(rationaleShape, input)
+      ? { ...input, rationale: truncateToCharacters(input.rationale.trim(), ESCALATION_RATIONALE_LIMIT) }
+      : input,
+  )
+  if (requiresRationale && payload.rationale === undefined) {
+    throw new Error('An escalation verdict requires a rationale.')
+  }
   const riskLevel = payload.risk_level ?? (payload.outcome === 'allow' ? 'low' : 'high')
   const rationale =
     payload.rationale ??

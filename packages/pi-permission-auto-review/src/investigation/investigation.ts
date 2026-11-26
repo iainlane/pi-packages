@@ -2,6 +2,7 @@ import type { Tool, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
 import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import type {
   DestinationDescription,
+  EscalationRequest,
   ProcessResult,
   ReviewUnavailableReason,
   Sandbox,
@@ -355,6 +356,10 @@ export class InvestigationRun {
 
   get destination(): DestinationDescription | undefined {
     return this.source?.destination
+  }
+
+  get escalation(): EscalationRequest | undefined {
+    return this.source?.escalation
   }
 
   get copyFailure(): CopyFailure | undefined {

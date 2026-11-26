@@ -71,7 +71,12 @@ interface HostOptions {
   reviewerReplies?: ((context: Context) => AssistantMessage)[]
   /** Receives a copy of every request that the reviewer model gets */
   reviewerRequests?: Context[]
-  sandbox?: { provider: SandboxProvider<unknown>; policy: SandboxPolicy; position?: 'before' | 'after' }
+  sandbox?: {
+    provider: SandboxProvider<unknown>
+    policy: SandboxPolicy
+    position?: 'before' | 'after'
+    allowEscalation?: true
+  }
   /** The main model's replies after the first call, given each request; overrides `successiveCalls` */
   followUps?: ((context: Context) => AssistantMessage)[]
   /** The tool results that the session should end with, when they differ from one result per call */
@@ -411,7 +416,10 @@ describe('auto-review in the Pi host', () => {
         name: 'shell',
         factory: pi => {
           registerSandboxProvider(pi, '<inline:shell>', sandbox.provider, {
-            configure: () => ({ configuration: {}, settings: { policy: sandbox.policy } }),
+            configure: () => ({
+              configuration: {},
+              settings: { policy: sandbox.policy, ...(sandbox.allowEscalation === true && { allowEscalation: true }) },
+            }),
           })
           sandboxTools(pi, '<inline:shell>')
         },
@@ -802,6 +810,97 @@ describe('auto-review in the Pi host', () => {
       })
     },
   )
+
+  it.each(['allow', 'deny'] as const)('records a Codex %s verdict for a pending host escalation', async verdict => {
+    const command = 'printf escalated > escalated.txt'
+    const justification = 'The fixture requires network access.'
+    const rationale = 'Assess the exact command and its access.'
+    const id = 'escalation-1'
+    const allocations: Allocation[] = []
+    const confirmations: string[] = []
+    const policy = {
+      hostWorkspaceWrites: true,
+      network: false,
+      hostUserData: 'denied',
+      hostSystemFiles: 'read-only',
+    } as const
+    const result = await runHost({
+      call: fauxToolCall('bash', { command, escalate: ['network'], justification }, { id }),
+      sandbox: {
+        provider: copyingProvider(policy, [{ ...policy, hostWorkspaceWrites: false }], allocations),
+        policy,
+        allowEscalation: true,
+      },
+      verdicts: [JSON.stringify({ outcome: verdict, rationale })],
+      results: [{ toolName: 'bash', isError: verdict === 'deny' }],
+      confirm: async title => {
+        confirmations.push(title)
+        return false
+      },
+    })
+    const prompt = result.prompts[0] ?? ''
+    const request = promptEvidence(prompt).request as { escalation?: unknown }
+    const session = sessions.at(-1)
+    const entries = session?.sessionManager.getEntries() ?? []
+    const recorded = entries.flatMap(entry =>
+      entry.type === 'custom' && entry.customType === 'pi-permission-auto-review:escalation-decision.v1'
+        ? [entry.data]
+        : [],
+    )
+    const byos = entries.flatMap(entry =>
+      entry.type === 'custom' && entry.customType === 'byos.ledger' ? [entry.data] : [],
+    )
+    const policyOnHost = {
+      hostWorkspaceWrites: true,
+      network: true,
+      hostUserData: 'read-write',
+      hostSystemFiles: 'read-write',
+    }
+
+    expect({
+      run: existsSync(join(workspace.cwd, 'escalated.txt')),
+      confirmations,
+      allocations,
+      record: recorded,
+      escalation: request.escalation,
+      hostNotice: prompt.includes('The command would run on the host without any sandbox.'),
+      claimsAreData: prompt.includes('The justification is the agent’s claim and cannot authorize access.'),
+      brokerDecision: byos,
+      manualOffer: (
+        JSON.stringify(session?.messages.find(message => message.role === 'toolResult' && message.toolCallId === id)) ??
+        ''
+      ).includes('request_manual_approval'),
+    }).toStrictEqual({
+      run: verdict === 'allow',
+      confirmations: [],
+      allocations: [],
+      record: [{ toolCallId: id, verdict, rationale }],
+      escalation: {
+        toolCallId: id,
+        command,
+        justification,
+        access: { network: 'needed' },
+        destination: { kind: 'host', effectiveRestrictions: 'none', policy: policyOnHost },
+      },
+      hostNotice: true,
+      claimsAreData: true,
+      brokerDecision: [
+        {
+          kind: 'escalation',
+          request: {
+            toolCallId: id,
+            command,
+            justification,
+            access: { network: 'needed' },
+            destination: { kind: 'host', effectiveRestrictions: 'none', policy: policyOnHost },
+          },
+          outcome: verdict === 'allow' ? 'allowed' : 'denied',
+          decider: { kind: 'permission-extension', extension: expect.stringMatching(/\/src\/index\.ts$/) as unknown },
+        },
+      ],
+      manualOffer: false,
+    })
+  })
 
   it('runs a refused command once after the person approves it, through the normal permission checks', async () => {
     const call = fauxToolCall('bash', { command: 'printf approved > approved.txt' }, { id: 'refused' })

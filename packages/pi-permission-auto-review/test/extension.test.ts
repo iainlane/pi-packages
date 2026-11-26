@@ -9,7 +9,9 @@ import type {
 } from '@gotgenes/pi-permission-system'
 import type {
   ReviewUnavailableReason,
+  EscalationRequest,
   SandboxCopy,
+  SandboxClient,
   SandboxErrorInfo,
   ShellReviewLookup,
   ShellReviewSource,
@@ -29,8 +31,10 @@ import { EXTENSION_ID } from '../src/config/config.js'
 import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
 import { POLICY_REVISION } from '../src/presets/codex/policy.js'
+import { PRESETS } from '../src/presets/presets.js'
 import { STATISTICS_ENTRY_TYPE } from '../src/statistics/records.js'
 import { GlobalStatisticsStore } from '../src/statistics/store.js'
+import { truncateToCharacters } from '../src/text.js'
 import {
   investigationReply,
   permissionDetails,
@@ -104,6 +108,7 @@ describe('permission auto-review extension', () => {
     const eventHandlers = new Map<string, Handler[]>()
     const commands = new Map<string, Omit<RegisteredCommand, 'name' | 'sourceInfo'>>()
     const appendEntry = vi.fn<(type: string, data: unknown) => void>()
+    const recordEscalationDecision = vi.fn<SandboxClient['recordEscalationDecision']>()
     const add = (target: Map<string, Handler[]>, name: string, handler: Handler): void => {
       target.set(name, [...(target.get(name) ?? []), handler])
     }
@@ -130,7 +135,7 @@ describe('permission auto-review extension', () => {
           : 'ok' in route
             ? route
             : { ok: true, source: reviewSource(route.copy) },
-      recordEscalationDecision: vi.fn(),
+      recordEscalationDecision,
     })
     permissionAutoReview(pi as unknown as ExtensionAPI)
 
@@ -167,17 +172,14 @@ describe('permission auto-review extension', () => {
 
     return {
       emit,
-      start: () => {
+      start: (input: Record<string, unknown> = { command: 'pnpm publish' }) => {
         emit('session_start', {}, context)
-        emit(
-          'tool_call',
-          { type: 'tool_call', toolName: 'bash', toolCallId: 'call-1', input: { command: 'pnpm publish' } },
-          context,
-        )
+        emit('tool_call', { type: 'tool_call', toolName: 'bash', toolCallId: 'call-1', input }, context)
       },
       shutdown: () => void shutdownAndWait(),
       shutdownAndWait,
       appendEntry,
+      recordEscalationDecision,
       setStatus,
       ready(sessionId: string | null = SESSION_ID) {
         for (const handler of eventHandlers.get(PERMISSIONS_READY_CHANNEL) ?? []) {
@@ -374,6 +376,204 @@ describe('permission auto-review extension', () => {
       close: async () => ({ confirmed: true, recoveries: [], failures: [] }),
     }
   }
+
+  function escalationFixture() {
+    const input = { command: 'pnpm publish', escalate: ['network'], justification: 'Use the network for upload.' }
+    const escalation: EscalationRequest = {
+      toolCallId: 'call-1',
+      command: input.command,
+      access: { network: 'needed' },
+      justification: input.justification,
+      destination: {
+        kind: 'provider',
+        providerId: 'fixture',
+        effectiveRestrictions: 'Fixture policy',
+        policy: reviewWorkspace.policy,
+      },
+    }
+    return { input, escalation, source: { ...reviewSource(async () => reviewCopy()), escalation } }
+  }
+
+  it('does not record a denial when the preset asks the user at its limit', async () => {
+    const factory = vi.spyOn(PRESETS.codex, 'createLimiter').mockReturnValue({
+      limitAction: 'prompt',
+      refusal: () => undefined,
+      recordDenial: () => 'consecutive',
+      recordNonDenial: () => {},
+      resetTurn: () => {},
+    })
+    try {
+      const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+      publish(register)
+      const { input, source } = escalationFixture()
+      const harness = start(undefined, true, { ok: true, source })
+      harness.start(input)
+      harness.ready()
+      const { verdict, entry } = await review(register.mock.calls[0]?.[1])
+
+      expect({
+        verdict,
+        decisions: harness.recordEscalationDecision.mock.calls,
+        denialLimit: entry?.[1]?.['denialLimit'],
+      }).toStrictEqual({
+        verdict: { kind: 'defer' },
+        decisions: [],
+        denialLimit: 'consecutive',
+      })
+    } finally {
+      factory.mockRestore()
+    }
+  })
+
+  it.each(['allow', 'deny'] as const)('logs the rationale and call ID for an escalation %s', async outcome => {
+    const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(register)
+    const { input, source } = escalationFixture()
+    const rationale = 'The review considered the requested network access.'
+    const { registry } = reviewRegistry(JSON.stringify({ outcome, rationale }))
+    const harness = start(registry, true, { ok: true, source })
+    harness.start(input)
+    harness.ready()
+    const { entry } = await review(register.mock.calls[0]?.[1])
+
+    expect(entry).toStrictEqual([
+      'auto_review.decision',
+      {
+        actionDigest: inputDigest(input),
+        actionKind: 'shell',
+        answersOmitted: 0,
+        attempts: 1,
+        authorityEdited: false,
+        authorityFits: true,
+        contextSource: 'active-branch',
+        durationMs: expect.any(Number) as unknown,
+        escalationRationale: rationale,
+        imagesOmitted: 0,
+        model: 'codex-auto-review',
+        outcome,
+        policyRevision: POLICY_REVISION,
+        priorReviews: 0,
+        provenanceUncertain: false,
+        provider: 'openai',
+        requestId: 'request-1',
+        riskLevel: outcome === 'allow' ? 'low' : 'high',
+        toolCallId: 'call-1',
+        usage: { cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, input: 0, output: 0 },
+        userApproval: 'unknown',
+      },
+    ])
+  })
+
+  it('keeps a bounded session record when the reviewer sends a long rationale', async () => {
+    const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(register)
+    const { input, source } = escalationFixture()
+    const rationale = `${'a'.repeat(3_000)}${'b'.repeat(3_000)}`
+    const { registry } = reviewRegistry(JSON.stringify({ outcome: 'allow', rationale }))
+    const harness = start(registry, true, { ok: true, source })
+    harness.start(input)
+    harness.ready()
+    const { verdict } = await review(register.mock.calls[0]?.[1])
+
+    expect({
+      verdict,
+      ledger: harness.appendEntry.mock.calls.filter(
+        ([type]) => type === 'pi-permission-auto-review:escalation-decision.v1',
+      ),
+    }).toStrictEqual({
+      verdict: { kind: 'allow' },
+      ledger: [
+        [
+          'pi-permission-auto-review:escalation-decision.v1',
+          { toolCallId: 'call-1', verdict: 'allow', rationale: truncateToCharacters(rationale, 4_000) },
+        ],
+      ],
+    })
+  })
+
+  it.each([
+    { scenario: 'Claude Code preset', error: 'escalation-preset-deferred', reviews: 0, submissions: 0 },
+    { scenario: 'SDK rejects the decision', error: 'escalation-record-failed', reviews: 1, submissions: 1 },
+    { scenario: 'missing broker source', error: 'escalation-source-unavailable', reviews: 0, submissions: 0 },
+    { scenario: 'session moves during copy cleanup', error: 'escalation-review-stale', reviews: 2, submissions: 0 },
+    { scenario: 'the reviewer omits its rationale', error: 'invalid-response', reviews: 3, submissions: 0 },
+  ])('defers an escalation when $scenario', async ({ scenario, error, reviews, submissions }) => {
+    if (scenario === 'Claude Code preset') {
+      writeFile(configPath(workspace.cwd, 'global'), { preset: 'claude-code' })
+    }
+    const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(register)
+    const { registry, streamSimple } = reviewRegistry(
+      scenario === 'the reviewer omits its rationale'
+        ? '{"outcome":"allow"}'
+        : '{"outcome":"allow","rationale":"The user permitted the action."}',
+    )
+    const input = {
+      command: 'pnpm publish',
+      escalate: ['network', { read: ['fixture.json'] }],
+      justification: 'Use the network for upload.',
+    }
+    const escalation: EscalationRequest = {
+      toolCallId: 'call-1',
+      command: input.command,
+      access: { network: 'needed', paths: { read: ['fixture.json'] } },
+      justification: input.justification,
+      destination: { kind: 'host', effectiveRestrictions: 'none', policy: reviewWorkspace.policy },
+    }
+    const close = vi.fn<SandboxCopy['close']>(reviewCopy().close)
+    const copy = async (): Promise<SandboxCopy> => ({ ...reviewCopy(), close })
+    const harness = start(
+      registry,
+      true,
+      scenario === 'missing broker source'
+        ? { ok: false, reason: 'destination-unavailable' }
+        : { ok: true, source: { ...reviewSource(copy), escalation } },
+    )
+    if (scenario === 'SDK rejects the decision') {
+      harness.recordEscalationDecision.mockImplementationOnce(() => {
+        throw Object.assign(new Error('The pending call has expired.'), {
+          name: 'InvalidSandboxRequestError',
+          operation: 'exec',
+        })
+      })
+    }
+    if (scenario === 'session moves during copy cleanup') {
+      streamSimple.mockReturnValueOnce({ result: async () => investigationReply('shell', { command: 'pwd' }) })
+      close.mockImplementationOnce(async () => {
+        harness.emit('session_tree', {}, {})
+        return { confirmed: true, recoveries: [], failures: [] }
+      })
+    }
+    harness.start(input)
+    harness.ready()
+    const { verdict, entry } = await review(register.mock.calls[0]?.[1])
+
+    expect({
+      verdict,
+      modelCalls: streamSimple.mock.calls.length,
+      decisions: harness.recordEscalationDecision.mock.calls.map(([, request, choice]) => [request, choice]),
+      ledger: harness.appendEntry.mock.calls.filter(
+        ([type]) => type === 'pi-permission-auto-review:escalation-decision.v1',
+      ),
+      diagnostics: [
+        entry?.[0],
+        entry?.[1]?.['errorCategory'],
+        entry?.[1]?.['toolCallId'],
+        entry?.[1]?.['escalationError'],
+      ],
+    }).toStrictEqual({
+      verdict: { kind: 'defer' },
+      modelCalls: reviews,
+      decisions: submissions === 0 ? [] : [[escalation, 'allow']],
+      ledger: [],
+      diagnostics: [
+        'auto_review.decision',
+        error,
+        'call-1',
+        scenario === 'SDK rejects the decision' ? 'InvalidSandboxRequestError' : undefined,
+      ],
+    })
+  })
 
   it.each([
     ['unknown-call', 'last review could not find its pending shell call'],

@@ -22,6 +22,7 @@ export const CLAUDE_CODE_PRESET: Preset = {
   builtInRules: BUILT_IN_RULES,
   createLimiter: () => new DenialCounter(),
   investigates: false,
+  decidesEscalations: false,
   async review(input, complete) {
     const { config, branch, details, contextFiles, action, destination } = input
     const systemPrompt = buildSystemPrompt(config.autoMode, contextFiles)
