@@ -383,11 +383,21 @@ describe('permission auto-review extension', () => {
   it.each([
     {
       args: '',
-      expected: 'call-1 · allow · The user approved the command.\ncall-2 · deny · "Flagged \\u001b[2J\\n\\u202e"',
-      severity: 'info',
+      expected:
+        'call-1 · allow · The user approved the command.\ncall-2 · deny · "Flagged \\u001b[2J\\n\\u202e"\nSkipped 2 unreadable escalation decisions.',
+      severity: 'warning',
     },
-    { args: 'call-2', expected: 'call-2 · deny · "Flagged \\u001b[2J\\n\\u202e"', severity: 'info' },
-    { args: 'missing', expected: 'No matching auto-review escalation decisions in this session.', severity: 'info' },
+    {
+      args: 'call-2',
+      expected: 'call-2 · deny · "Flagged \\u001b[2J\\n\\u202e"\nSkipped 2 unreadable escalation decisions.',
+      severity: 'warning',
+    },
+    {
+      args: 'missing',
+      expected:
+        'No matching auto-review escalation decisions in this session.\nSkipped 2 unreadable escalation decisions.',
+      severity: 'warning',
+    },
     { args: 'call-1 call-2', expected: 'Usage: /auto-escalations [tool-call-id]', severity: 'warning' },
   ])('lists session escalation decisions for arguments "$args"', async ({ args, expected, severity }) => {
     const harness = start()
@@ -397,10 +407,12 @@ describe('permission auto-review extension', () => {
         { customType, data: { toolCallId: 'call-1', verdict: 'allow', rationale: 'The user approved the command.' } },
         { customType, data: { toolCallId: 'call-2', verdict: 'deny', rationale: 'Flagged \u001B[2J\n\u202E' } },
         { customType, data: { toolCallId: 'bad-record', verdict: 'defer', rationale: 'Malformed decision.' } },
+        { customType, data: null },
         {
           customType: 'another-extension',
           data: { toolCallId: 'other-call', verdict: 'deny', rationale: 'Different log.' },
         },
+        { customType: 'another-extension', data: null },
       ].map(({ customType, data }, index): SessionEntry => ({
         type: 'custom',
         id: `entry-${index}`,

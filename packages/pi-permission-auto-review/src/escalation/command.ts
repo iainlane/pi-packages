@@ -14,16 +14,23 @@ export function registerEscalationCommand(pi: ExtensionAPI): void {
         return
       }
 
-      const decisions = readEscalationDecisions(context.sessionManager.getEntries(), filter || undefined)
+      const { decisions, unreadableCount } = readEscalationDecisions(
+        context.sessionManager.getEntries(),
+        filter || undefined,
+      )
       const lines = decisions.map(
         ({ toolCallId, verdict, rationale }) =>
           `${escapeTerminalText(toolCallId)} · ${verdict} · ${escapeTerminalText(rationale)}`,
       )
-      displayCommandOutput(
-        context,
-        lines.join('\n') || 'No matching auto-review escalation decisions in this session.',
-        'info',
-      )
+      if (lines.length === 0) {
+        lines.push('No matching auto-review escalation decisions in this session.')
+      }
+      if (unreadableCount > 0) {
+        const noun = unreadableCount === 1 ? 'decision' : 'decisions'
+        lines.push(`Skipped ${unreadableCount} unreadable escalation ${noun}.`)
+      }
+
+      displayCommandOutput(context, lines.join('\n'), unreadableCount > 0 ? 'warning' : 'info')
     },
   })
 }

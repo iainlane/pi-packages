@@ -24,11 +24,27 @@ export function appendEscalationDecision(pi: Pick<ExtensionAPI, 'appendEntry'>, 
   pi.appendEntry(ENTRY_TYPE, v.parse(entrySchema, { ...entry, rationale }))
 }
 
-export function readEscalationDecisions(entries: readonly SessionEntry[], filter?: string): EscalationDecisionEntry[] {
-  return entries.flatMap(entry => {
-    if (entry.type !== 'custom' || entry.customType !== ENTRY_TYPE) return []
+interface EscalationDecisionHistory {
+  decisions: EscalationDecisionEntry[]
+  unreadableCount: number
+}
+
+export function readEscalationDecisions(entries: readonly SessionEntry[], filter?: string): EscalationDecisionHistory {
+  const decisions: EscalationDecisionEntry[] = []
+  let unreadableCount = 0
+
+  for (const entry of entries) {
+    if (entry.type !== 'custom' || entry.customType !== ENTRY_TYPE) continue
 
     const result = v.safeParse(entrySchema, entry.data)
-    return result.success && (filter === undefined || result.output.toolCallId === filter) ? [result.output] : []
-  })
+    if (!result.success) {
+      unreadableCount += 1
+      continue
+    }
+    if (filter === undefined || result.output.toolCallId === filter) {
+      decisions.push(result.output)
+    }
+  }
+
+  return { decisions, unreadableCount }
 }
