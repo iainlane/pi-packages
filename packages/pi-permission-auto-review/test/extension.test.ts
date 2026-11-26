@@ -72,8 +72,12 @@ describe('permission auto-review extension', () => {
     }
   })
 
-  function publish(registerAuthorizer: PermissionsService['registerAuthorizer'], sessionId = SESSION_ID) {
-    const service = { registerAuthorizer } as PermissionsService
+  function publish(
+    registerAuthorizer: PermissionsService['registerAuthorizer'],
+    sessionId = SESSION_ID,
+    registerToolInputFormatter: PermissionsService['registerToolInputFormatter'] = () => () => {},
+  ) {
+    const service = { registerAuthorizer, registerToolInputFormatter } as PermissionsService
     publishPermissionsService(sessionId, service)
     published.push([sessionId, service])
   }
@@ -244,6 +248,68 @@ describe('permission auto-review extension', () => {
 
     harness.ready()
     expect(registerAuthorizer).toHaveBeenCalledOnce()
+  })
+
+  it('registers the PowerShell formatter once per service and disposes it on replacement and shutdown', () => {
+    const disposeFirst = vi.fn()
+    const disposeSecond = vi.fn()
+    const registerFirst = vi.fn<PermissionsService['registerToolInputFormatter']>(() => disposeFirst)
+    const registerSecond = vi.fn<PermissionsService['registerToolInputFormatter']>(() => disposeSecond)
+    const registerAuthorizer = vi.fn(() => vi.fn())
+    publish(registerAuthorizer, SESSION_ID, registerFirst)
+    const harness = start()
+    harness.start()
+    harness.ready()
+    harness.ready()
+
+    const ordinaryPreview = registerFirst.mock.calls[0]?.[1]({ command: 'Write-Output fixture' })
+    publish(registerAuthorizer, SESSION_ID, registerSecond)
+    harness.ready()
+    const disposalsBeforeShutdown = [disposeFirst.mock.calls.length, disposeSecond.mock.calls.length]
+    harness.shutdown()
+
+    expect({
+      first: registerFirst.mock.calls,
+      second: registerSecond.mock.calls,
+      ordinaryPreview,
+      disposalsBeforeShutdown,
+      disposals: [disposeFirst.mock.calls, disposeSecond.mock.calls],
+    }).toStrictEqual({
+      first: [['powershell', expect.any(Function)]],
+      second: [['powershell', expect.any(Function)]],
+      ordinaryPreview: undefined,
+      disposalsBeforeShutdown: [1, 0],
+      disposals: [[[]], [[]]],
+    })
+  })
+
+  it('reports a conflicting PowerShell formatter once per session', () => {
+    const register = vi.fn<PermissionsService['registerToolInputFormatter']>(() => {
+      throw new Error('A tool input formatter is already registered.')
+    })
+    publish(
+      vi.fn(() => vi.fn()),
+      SESSION_ID,
+      register,
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const harness = start()
+      harness.start()
+      harness.ready()
+      harness.ready()
+
+      expect({ registrations: register.mock.calls, warnings: warn.mock.calls }).toStrictEqual({
+        registrations: [['powershell', expect.any(Function)]],
+        warnings: [
+          [
+            `[${EXTENSION_ID}] failed to register the PowerShell escalation formatter: A tool input formatter is already registered.`,
+          ],
+        ],
+      })
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('registers each node into the service keyed by its own session id', () => {

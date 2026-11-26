@@ -1,5 +1,12 @@
+import type { AutoReviewConfig } from '../src/config/config.js'
 import type { AssistantMessage, Context, ToolCall } from '@earendil-works/pi-ai'
-import type { AgentSession, ExtensionFactory, InlineExtension, ToolInfo } from '@earendil-works/pi-coding-agent'
+import type {
+  AgentSession,
+  ExtensionFactory,
+  ExtensionUIContext,
+  InlineExtension,
+  ToolInfo,
+} from '@earendil-works/pi-coding-agent'
 import type { PermissionState, PermissionsReadyEvent, PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import type {
   ProcessRequest,
@@ -8,9 +15,10 @@ import type {
   SandboxPolicy,
   SandboxProvider,
 } from 'pi-bring-your-own-sandbox/provider'
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, getCurrentTools } from '@earendil-works/pi-ai'
 import {
@@ -58,9 +66,11 @@ interface HostOptions {
   deny?: boolean
   extensionFactory?: ExtensionFactory
   permission?: Record<string, PermissionState | Record<string, PermissionState>>
+  permissionPromptTimeoutMs?: number
   probePosition?: 'before' | 'after'
   reviewPosition?: 'before' | 'after'
   prompt?: string
+  preset?: AutoReviewConfig['preset']
   /** Further calls, each in its own model response after the first */
   successiveCalls?: ToolCall[]
   /** The reviewer's reply to each review in turn; an allow by default */
@@ -82,6 +92,7 @@ interface HostOptions {
   /** The tool results that the session should end with, when they differ from one result per call */
   results?: { toolName: string; isError: boolean }[]
   confirm?: (title: string, message: string) => Promise<boolean>
+  select?: ExtensionUIContext['select']
 }
 
 interface Allocation {
@@ -299,9 +310,11 @@ describe('auto-review in the Pi host', () => {
     deny = false,
     extensionFactory,
     permission,
+    permissionPromptTimeoutMs,
     probePosition,
     reviewPosition = 'before',
     prompt = 'Perform the scripted action.',
+    preset,
     successiveCalls = [],
     verdicts = ['{"outcome":"allow"}'],
     interrupted = false,
@@ -311,12 +324,14 @@ describe('auto-review in the Pi host', () => {
     followUps,
     results,
     confirm,
+    select,
   }: HostOptions) {
     mkdirSync(workspace.cwd, { recursive: true })
     workspace.cwd = realpathSync(workspace.cwd)
     const agentDir = getAgentDir()
     writeFile(join(agentDir, 'extensions/pi-permission-system/config.json'), {
       authorizerChain: ['auto-review'],
+      promptTimeoutMs: permissionPromptTimeoutMs,
       permission: {
         '*': 'allow',
         path: 'allow',
@@ -332,6 +347,7 @@ describe('auto-review in the Pi host', () => {
       provider: reviewer.getModel().provider,
       model: reviewer.getModel().id,
       reasoning: 'off',
+      preset,
     })
     const details: PromptPermissionDetails[] = []
     const prompts: string[] = []
@@ -472,6 +488,7 @@ describe('auto-review in the Pi host', () => {
         'bash',
         'write',
         'codemode',
+        ...(sandbox !== undefined && call.name === 'powershell' ? ['powershell'] : []),
         ...(extensionFactory === undefined ? [] : [call.name]),
         ...(followUps === undefined ? [] : ['request_manual_approval']),
       ],
@@ -482,8 +499,7 @@ describe('auto-review in the Pi host', () => {
     sessions.push(session)
     await session.bindExtensions({
       mode: 'rpc',
-      // A UI that ignores everything except confirmations
-      ...(confirm === undefined
+      ...(confirm === undefined && select === undefined
         ? {}
         : {
             uiContext: {
@@ -493,6 +509,7 @@ describe('auto-review in the Pi host', () => {
                 ),
               ),
               confirm,
+              select,
             } as never,
           }),
       onError: error => errors.push(error),
@@ -901,6 +918,159 @@ describe('auto-review in the Pi host', () => {
       manualOffer: false,
     })
   })
+
+  it('asks separately about a deferred Bash command and its escalation', async () => {
+    const command = 'printf escalated > escalated.txt'
+    const justification = 'The fixture requires network access.'
+    const policy = {
+      hostWorkspaceWrites: true,
+      network: false,
+      hostUserData: 'denied',
+      hostSystemFiles: 'read-only',
+    } as const
+    const select = vi.fn<ExtensionUIContext['select']>()
+    select.mockResolvedValueOnce('Yes').mockResolvedValueOnce('Deny')
+    let dispose: (() => void) | undefined
+    const formatter = vi.fn(() => 'Bash formatter fixture.')
+
+    const result = await runHost({
+      call: fauxToolCall('bash', { command, escalate: ['network'], justification }, { id: 'deferred-bash' }),
+      sandbox: {
+        provider: copyingProvider(policy, [{ ...policy, hostWorkspaceWrites: false }], []),
+        policy,
+        allowEscalation: true,
+      },
+      preset: 'claude-code',
+      results: [{ toolName: 'bash', isError: true }],
+      select,
+      extensionFactory: pi => {
+        pi.events.on(PERMISSIONS_READY_CHANNEL, data => {
+          const { sessionId } = data as PermissionsReadyEvent
+          if (sessionId !== null) {
+            dispose ??= getPermissionsService(sessionId)?.registerToolInputFormatter('bash', formatter)
+          }
+        })
+        pi.on('session_shutdown', () => dispose?.())
+      },
+    })
+
+    expect({
+      prompts: select.mock.calls.map(([title, options]) => [title.split('\n', 1)[0], options.slice(0, 1)]),
+      commandPrompt: select.mock.calls[0]?.[0].includes(command),
+      justificationPrompt: select.mock.calls[1]?.[0].includes(justification),
+      formatter: formatter.mock.calls,
+      reviewCalls: result.reviewerCalls,
+      executed: existsSync(join(workspace.cwd, 'escalated.txt')),
+    }).toStrictEqual({
+      prompts: [
+        ['Permission Required', ['Yes']],
+        ['Allow sandbox escalation?', ['Deny']],
+      ],
+      commandPrompt: true,
+      justificationPrompt: true,
+      formatter: [],
+      reviewCalls: 0,
+      executed: false,
+    })
+  })
+
+  it.each(['approved', 'unanswered', 'approved without a capture'] as const)(
+    'previews a deferred PowerShell escalation when the permission prompt is %s',
+    async answer => {
+      const id = 'deferred-powershell'
+      const command = 'Write-Output fixture'
+      const justification = 'Need access.\u001B[2J'
+      const escalate = ['network', { read: ['fixture.txt'] }]
+      const shell = join(workspace.cwd, 'bin', 'pwsh')
+      writeFile(shell, '#!/bin/sh\nexit 99\n')
+      chmodSync(shell, 0o755)
+      vi.stubEnv('PATH', [join(workspace.cwd, 'bin'), process.env['PATH'] ?? ''].join(delimiter))
+      const policy = {
+        hostWorkspaceWrites: true,
+        network: false,
+        hostUserData: 'denied',
+        hostSystemFiles: 'read-only',
+      } as const
+      const allocations: Allocation[] = []
+      const select = vi.fn<ExtensionUIContext['select']>()
+      if (answer === 'unanswered') {
+        select.mockImplementationOnce(async (_title, _options, opts) => {
+          const signal = opts?.signal
+          if (signal === undefined) throw new Error('The permission prompt has no answer deadline')
+
+          await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+
+          return undefined
+        })
+      } else {
+        select.mockResolvedValueOnce('Yes').mockResolvedValueOnce('Deny')
+      }
+      const result = await runHost({
+        call: fauxToolCall('powershell', { command, escalate, justification }, { id }),
+        permission: { powershell: 'ask' },
+        ...(answer === 'unanswered' && { permissionPromptTimeoutMs: 20 }),
+        sandbox: {
+          provider: copyingProvider(policy, [{ ...policy, hostWorkspaceWrites: false }], allocations),
+          policy,
+          allowEscalation: true,
+        },
+        preset: 'claude-code',
+        reviewPosition: answer === 'approved without a capture' ? 'after' : 'before',
+        results: [{ toolName: 'powershell', isError: true }],
+        select,
+      })
+      const byos =
+        sessions
+          .at(-1)
+          ?.sessionManager.getEntries()
+          .flatMap(entry => (entry.type === 'custom' && entry.customType === 'byos.ledger' ? [entry.data] : [])) ?? []
+      const requestAccess = { network: 'needed', paths: { read: [join(workspace.cwd, 'fixture.txt')] } }
+      const preview =
+        answer === 'approved without a capture'
+          ? `with input ${JSON.stringify({ command, escalate, justification })}`
+          : [
+              'Destination: host. Effective restrictions: none. The command runs without a sandbox.',
+              `Requested access: ${JSON.stringify(requestAccess)}`,
+              `Command: ${command}`,
+              'Agent\'s justification: "Need access.\\u001b[2J"',
+            ].join('\n')
+
+      expect({
+        prompts: select.mock.calls.map(([title]) => title.split('\n', 1)[0]),
+        hostWarning: select.mock.calls[0]?.[0].replace(/\s+/gu, ' ').includes('The command runs without a sandbox.'),
+        evidence: result.details[0]?.payload.evidence,
+        allocations,
+        reviewCalls: result.reviewerCalls,
+        byos,
+      }).toStrictEqual({
+        prompts:
+          answer === 'unanswered' ? ['Permission Required'] : ['Permission Required', 'Allow sandbox escalation?'],
+        hostWarning: answer !== 'approved without a capture',
+        evidence: [{ label: 'input', text: preview, detail: null }],
+        allocations: [],
+        reviewCalls: 0,
+        byos: [
+          {
+            kind: 'escalation',
+            request: {
+              toolCallId: id,
+              command,
+              justification,
+              access: requestAccess,
+              destination: {
+                kind: 'host',
+                effectiveRestrictions: 'none',
+                policy: { ...policy, network: true, hostUserData: 'read-write', hostSystemFiles: 'read-write' },
+              },
+            },
+            ...(answer === 'unanswered'
+              ? { outcome: 'cancelled' }
+              : { outcome: 'denied', decider: { kind: 'confirmation' } }),
+          },
+        ],
+      })
+    },
+  )
 
   it('runs a refused command once after the person approves it, through the normal permission checks', async () => {
     const call = fauxToolCall('bash', { command: 'printf approved > approved.txt' }, { id: 'refused' })

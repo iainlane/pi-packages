@@ -192,12 +192,19 @@ write paths. The broker selects a provider profile or the host before the
 decision. The `codex` preset sees the requested access, justification, effective
 command and destination. The host has no sandbox restrictions. When the review
 returns a current allow or deny, BYOS uses that verdict for the pending tool
-call. When the review defers, BYOS asks for confirmation if the permission gate
-lets the call proceed. The `claude-code` preset always defers an escalation.
+call. The `claude-code` preset always defers an escalation.
 
-The decision log and `/auto-escalations [tool-call-id]` show the verdict and
-rationale under the tool call ID. When BYOS diagnostics are loaded, `/byos log`
-also shows the broker's outcomes, including its confirmation and expiry results.
+For a deferred Bash or PowerShell ask, the pi-permission-system prompt appears
+first. If the user approves the call, BYOS then asks the user to confirm the
+escalation. The PowerShell prompt can preview the escalation terms, but
+pi-permission-system can clip or omit them and does not report what it displayed.
+Its Bash prompt does not use registered input formatters. In either shell, the
+permission prompt cannot decide the escalation.
+
+The decision log and `/auto-escalations [tool-call-id]` show the automatic
+verdict and rationale under the tool call ID. When BYOS diagnostics are loaded,
+`/byos log` also shows the broker's outcomes, including its confirmation and
+expiry results.
 
 [codex-shell-approval]: https://github.com/openai/codex/blob/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/core/src/tools/handlers/shell_spec.rs#L225-L252
 

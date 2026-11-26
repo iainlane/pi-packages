@@ -158,8 +158,14 @@ extra access. The `codex` preset reviews the destination and restrictions that
 BYOS chose for the call. A host destination runs without a sandbox. The agent
 writes the justification, which cannot authorize the request.
 
-The `claude-code` preset defers every BYOS escalation. When the permission gate
-lets a deferred call proceed, BYOS asks for confirmation.
+The `claude-code` preset defers every BYOS escalation. For a deferred Bash or
+PowerShell ask, you see the pi-permission-system prompt first. If you approve
+the call, BYOS then asks you to confirm the escalation.
+
+The PowerShell permission prompt can preview the escalation. The dialog can
+clip or omit those details, and the pi-permission-system decision does not
+report which details appeared. The Bash prompt does not use registered input
+formatters. BYOS therefore confirms the escalation separately for both shells.
 
 Run `/auto-escalations` to see the automatic decisions and rationales from the
 current session. Pass a tool call ID to filter the list.

@@ -27,6 +27,7 @@ import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
 import { registerEscalationCommand } from './escalation/command.js'
 import { appendEscalationDecision } from './escalation/decisions.js'
+import { PowerShellEscalationPreview } from './escalation/powershell-preview.js'
 import { formatInvestigationOutcome, Investigation } from './investigation/investigation.js'
 import { ManualApprovalController } from './manual/controller.js'
 import { registerManualApprovalTool } from './manual/tool.js'
@@ -141,6 +142,12 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
       statistics: recorder.sink(),
     }
   })
+  const escalationPreview = new PowerShellEscalationPreview(sandbox, warn)
+  actions.onCaptured((invocation, context, input) => {
+    escalationPreview.capture(invocation, context, input)
+    return undefined
+  })
+  pi.on('tool_execution_end', event => escalationPreview.end(event.toolCallId))
   registerManualApprovalTool(pi, manual)
   pi.events.on(PERMISSIONS_DECISION_CHANNEL, data => manual.decided(data as PermissionDecisionEvent))
 
@@ -281,6 +288,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
 
   pi.on('session_start', (_event, ctx) => {
     retire(generation)
+    escalationPreview.start()
     const projectTrusted = ctx.isProjectTrusted()
     const result = loadConfig(ctx.cwd, projectTrusted)
     reportIssues(result.issues)
@@ -327,7 +335,10 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     }
     sessionId ??= ready.sessionId
     const service = getPermissionsService(sessionId)
-    if (generation === undefined || generation.dispose !== undefined || service === undefined) {
+    if (generation === undefined) return
+
+    escalationPreview.connect(service)
+    if (generation.dispose !== undefined || service === undefined) {
       return
     }
     try {
@@ -369,6 +380,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
 
   pi.on('session_shutdown', async (_event, ctx) => {
     setFooterStatus(ctx, undefined)
+    escalationPreview.stop()
     retire(generation)
     generation = undefined
     sessionId = undefined

@@ -56,7 +56,11 @@ export interface CapturedInvocation {
 }
 
 /** Runs in the capture's `tool_call` handler and can block the call */
-type CaptureObserver = (invocation: CapturedInvocation, ctx: ExtensionContext) => ToolCallEventResult | undefined
+type CaptureObserver = (
+  invocation: CapturedInvocation,
+  ctx: ExtensionContext,
+  input: ToolCallEvent['input'],
+) => ToolCallEventResult | undefined
 
 interface McpToolName {
   server: string
@@ -174,7 +178,7 @@ export class ActionCapture {
         return undefined
       }
       for (const observer of this.observers) {
-        const result = observer(invocation, ctx)
+        const result = observer(invocation, ctx, event.input)
         if (result?.block === true) {
           return result
         }
