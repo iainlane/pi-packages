@@ -145,22 +145,8 @@ function canonicalPath(path: string): string {
   }
 }
 
-/**
- * Files and directories whose contents decide which extensions run, what this reviewer and the permission system
- * allow, and which sandbox the reviewer investigates in
- */
 function protectedTargets(cwd: string): string[] {
-  const agentDir = getAgentDir()
-
-  return [
-    join(agentDir, 'extensions', EXTENSION_ID),
-    join(cwd, '.pi', 'extensions', EXTENSION_ID),
-    join(agentDir, 'extensions', 'pi-permission-system'),
-    join(cwd, '.pi', 'extensions', 'pi-permission-system'),
-    join(agentDir, 'settings.json'),
-    join(cwd, '.pi', 'settings.json'),
-    join(agentDir, 'byos.json'),
-  ].map(canonicalPath)
+  return [getAgentDir(), join(cwd, '.pi')].map(canonicalPath)
 }
 
 function isProtectedTarget(path: string, cwd: string): boolean {

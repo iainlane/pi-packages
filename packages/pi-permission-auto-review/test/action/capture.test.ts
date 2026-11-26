@@ -290,7 +290,8 @@ describe('writes to configuration that governs the agent or this review', () => 
     '<agent>/extensions/pi-permission-system/config.json',
     '<cwd>/.pi/settings.json',
     '<agent>/settings.json',
-    '<agent>/byos.json',
+    '<agent>/new-provider.json',
+    '<cwd>/.pi/extensions/other/config.json',
   ])('defers a write or edit to %s', path => {
     const h = harness(workspace.cwd)
     const resolved = ['write', 'edit'].map(toolName =>
@@ -320,10 +321,10 @@ describe('writes to configuration that governs the agent or this review', () => 
     )
   })
 
-  it('reviews a write to another extension directory', () => {
+  it('reviews a write to a workspace path outside the configuration directories', () => {
     const h = harness(workspace.cwd)
     const result = h.capture.resolve(
-      h.call('write', { path: '.pi/extensions/other/config.json', content: '{}' }),
+      h.call('write', { path: '.pi-example/extensions/other/config.json', content: '{}' }),
       'session-1',
     )
 

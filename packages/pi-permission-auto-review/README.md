@@ -107,9 +107,10 @@ conversation.
 - `defer`: pi-permission-system moves to the next authorizer in the chain or
   asks you. The reviewer defers when it cannot decide: the model failed or
   timed out, the call's input was not captured, the ask came from a subagent,
-  the call would change Pi's settings or the configuration of this extension,
-  pi-permission-system or the sandbox, or your messages changed while the
-  review ran.
+  the write or edit targets Pi's configuration and extension directories, or
+  your messages changed while the review ran. These directories are the agent
+  directory and the project's `.pi/`. Pi loads settings, packages and
+  extensions from them without a sandbox.
 - When you interrupt the turn, a review in progress ends with a refusal, so you
   are not asked about a turn that you have just stopped.
 
