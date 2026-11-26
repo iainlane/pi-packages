@@ -145,7 +145,8 @@ function truncate(text: string): string {
     return text
   }
 
-  return new TextDecoder().decode(bytes.subarray(0, OUTPUT_LIMIT_BYTES - Buffer.byteLength(TRUNCATED))) + TRUNCATED
+  const prefix = bytes.subarray(0, OUTPUT_LIMIT_BYTES - Buffer.byteLength(TRUNCATED))
+  return new TextDecoder().decode(prefix, { stream: true }) + TRUNCATED
 }
 
 function shellOutcome(result: ProcessResult): CallOutcome {

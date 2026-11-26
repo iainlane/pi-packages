@@ -212,6 +212,23 @@ describe('investigation', () => {
     })
   })
 
+  it.each(['é', '€', '🧪'])('truncates UTF-8 output before a partial %s', async character => {
+    const suffix = '\n[truncated]'
+    const prefix = 'a'.repeat(32 * 1024 - encode(suffix).length - 1)
+    const data = encode(`${prefix}${character}tail that exceeds the limit`)
+    const { investigation } = setup({
+      sandbox: {
+        files: {
+          stat: async () => ({ kind: 'file', size: data.length }),
+          readFile: async () => data,
+        },
+      },
+    })
+    const { result } = await runOne(investigation, call('read', { path: 'utf8.txt' }))
+
+    expect(result).toStrictEqual({ text: `${prefix}${suffix}`, isError: false })
+  })
+
   it.each([
     {
       description: 'a directory',
