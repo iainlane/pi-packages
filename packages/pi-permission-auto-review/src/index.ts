@@ -25,6 +25,7 @@ import { ActionCapture } from './action/capture.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
+import { registerEscalationCommand } from './escalation/command.js'
 import { appendEscalationDecision } from './escalation/decisions.js'
 import { formatInvestigationOutcome, Investigation } from './investigation/investigation.js'
 import { ManualApprovalController } from './manual/controller.js'
@@ -380,6 +381,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   })
 
   registerAutoReviewCommand(pi, { getActiveConfig: () => generation?.config, applyConfig })
+  registerEscalationCommand(pi)
   registerStatisticsCommand(pi, recorder, () => ({
     registered: generation?.dispose !== undefined,
     config: generation?.config,

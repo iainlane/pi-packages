@@ -1,5 +1,5 @@
 import type { AssistantMessage } from '@earendil-works/pi-ai'
-import type { ExtensionAPI, ModelRegistry, RegisteredCommand } from '@earendil-works/pi-coding-agent'
+import type { ExtensionAPI, ModelRegistry, RegisteredCommand, SessionEntry } from '@earendil-works/pi-coding-agent'
 import type {
   Authorizer,
   AuthorizerLog,
@@ -18,6 +18,7 @@ import type {
 } from 'pi-bring-your-own-sandbox/consumer'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import process from 'node:process'
 import { buildSessionProjection, getAgentDir } from '@earendil-works/pi-coding-agent'
 import {
   PERMISSIONS_READY_CHANNEL,
@@ -145,6 +146,7 @@ describe('permission auto-review extension', () => {
       }
     }
     const setStatus = vi.fn()
+    const sessionEntries: SessionEntry[] = []
     const context = {
       cwd: workspace.cwd,
       modelRegistry: registry,
@@ -153,7 +155,7 @@ describe('permission auto-review extension', () => {
         buildSessionProjection: () => buildSessionProjection([]),
         getSessionId: () => SESSION_ID,
         getLeafId: () => null,
-        getEntries: () => [],
+        getEntries: () => sessionEntries,
       },
       ui: { setStatus, notify: vi.fn() },
       hasUI: true,
@@ -179,6 +181,7 @@ describe('permission auto-review extension', () => {
       shutdown: () => void shutdownAndWait(),
       shutdownAndWait,
       appendEntry,
+      sessionEntries,
       recordEscalationDecision,
       setStatus,
       ready(sessionId: string | null = SESSION_ID) {
@@ -187,11 +190,11 @@ describe('permission auto-review extension', () => {
         }
       },
       notify,
-      async run(args: string, command = 'permission-auto-review') {
+      async run(args: string, command = 'permission-auto-review', hasUI = true) {
         await commands.get(command)?.handler(args, {
           ...context,
-          mode: 'tui',
-          hasUI: true,
+          mode: hasUI ? 'tui' : 'print',
+          hasUI,
           ui: { confirm: async () => true, notify },
           waitForIdle: async () => {},
         } as never)
@@ -376,6 +379,56 @@ describe('permission auto-review extension', () => {
       close: async () => ({ confirmed: true, recoveries: [], failures: [] }),
     }
   }
+
+  it.each([
+    {
+      args: '',
+      expected: 'call-1 · allow · The user approved the command.\ncall-2 · deny · "Flagged \\u001b[2J\\n\\u202e"',
+      severity: 'info',
+    },
+    { args: 'call-2', expected: 'call-2 · deny · "Flagged \\u001b[2J\\n\\u202e"', severity: 'info' },
+    { args: 'missing', expected: 'No matching auto-review escalation decisions in this session.', severity: 'info' },
+    { args: 'call-1 call-2', expected: 'Usage: /auto-escalations [tool-call-id]', severity: 'warning' },
+  ])('lists session escalation decisions for arguments "$args"', async ({ args, expected, severity }) => {
+    const harness = start()
+    const customType = 'pi-permission-auto-review:escalation-decision.v1'
+    harness.sessionEntries.push(
+      ...[
+        { customType, data: { toolCallId: 'call-1', verdict: 'allow', rationale: 'The user approved the command.' } },
+        { customType, data: { toolCallId: 'call-2', verdict: 'deny', rationale: 'Flagged \u001B[2J\n\u202E' } },
+        { customType, data: { toolCallId: 'bad-record', verdict: 'defer', rationale: 'Malformed decision.' } },
+        {
+          customType: 'another-extension',
+          data: { toolCallId: 'other-call', verdict: 'deny', rationale: 'Different log.' },
+        },
+      ].map(({ customType, data }, index): SessionEntry => ({
+        type: 'custom',
+        id: `entry-${index}`,
+        parentId: null,
+        timestamp: '2026-11-26T00:00:00.000Z',
+        customType,
+        data,
+      })),
+    )
+    await harness.run(args, 'auto-escalations')
+
+    expect(harness.notify.mock.calls).toStrictEqual([[expected, severity]])
+  })
+
+  it('prints escalation command output to stderr in print mode', async () => {
+    const harness = start()
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      await harness.run('', 'auto-escalations', false)
+
+      expect({ stderr: stderr.mock.calls, ui: harness.notify.mock.calls }).toStrictEqual({
+        stderr: [['No matching auto-review escalation decisions in this session.\n']],
+        ui: [],
+      })
+    } finally {
+      stderr.mockRestore()
+    }
+  })
 
   function escalationFixture() {
     const input = { command: 'pnpm publish', escalate: ['network'], justification: 'Use the network for upload.' }

@@ -5,6 +5,7 @@ import type { StatisticsSummary } from './summary.js'
 import type { StatusRow } from './table.js'
 import { formatInvestigationOutcome } from '../investigation/investigation.js'
 import { PRESETS } from '../presets/presets.js'
+import { escapeTerminalText } from '../terminal.js'
 import { costComplete, ORDINARY_ISSUES } from './summary.js'
 import { statusComparison, statusTable } from './table.js'
 
@@ -79,23 +80,6 @@ const RECORDING_PROBLEMS: Readonly<Record<string, string>> = {
   'recording-failed': 'Some statistics could not be recorded.',
   'recorded-after-session': 'Some results arrived after their session ended and are counted only globally.',
 }
-const CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/u
-const CONTROL_CHARACTERS = /[\p{Cc}\p{Cf}]/gu
-
-/** A model or provider name as text that cannot move the cursor or hide characters on a terminal */
-function identifier(value: string): string {
-  if (!CONTROL_CHARACTER.test(value)) {
-    return value
-  }
-
-  return JSON.stringify(value).replace(CONTROL_CHARACTERS, character =>
-    Array.from(
-      { length: character.length },
-      (_, index) => `\\u${character.charCodeAt(index).toString(16).padStart(4, '0')}`,
-    ).join(''),
-  )
-}
-
 function money(value: number): string {
   const fixed = value.toFixed(6)
 
@@ -142,7 +126,7 @@ function scopeSummary(data: StatusData, scope: StatisticsScope): SummaryView | u
 }
 
 function issueText(issue: string): string {
-  return RECORDING_PROBLEMS[issue] ?? `A recording problem was reported: ${identifier(issue)}.`
+  return RECORDING_PROBLEMS[issue] ?? `A recording problem was reported: ${escapeTerminalText(issue)}.`
 }
 
 function calls(value: number): string {
@@ -255,7 +239,7 @@ function overview(state: AutoStatusState, data: StatusData, columns: number): st
 
   return [
     'Auto-review',
-    `Model: ${state.config === undefined ? 'Unavailable' : identifier(`${state.config.provider}/${state.config.model}`)}`,
+    `Model: ${state.config === undefined ? 'Unavailable' : escapeTerminalText(`${state.config.provider}/${state.config.model}`)}`,
     ...investigationLine(state),
     '',
     ...table,
@@ -267,7 +251,7 @@ function overview(state: AutoStatusState, data: StatusData, columns: number): st
 }
 
 function categoryRows(values: Record<string, number>): StatusRow[] {
-  return Object.entries(values).map(([key, value]) => [identifier(key), count.format(value)])
+  return Object.entries(values).map(([key, value]) => [escapeTerminalText(key), count.format(value)])
 }
 
 function omitted(label: string, value: number): string[] {
@@ -379,7 +363,7 @@ function human(summary: SummaryView, columns: number): string[] {
 
 function models(summary: SummaryView, columns: number): string[] {
   const lines = summary.models.flatMap(model => [
-    identifier(`${model.provider}/${model.model}`),
+    escapeTerminalText(`${model.provider}/${model.model}`),
     ...statusTable(
       [
         ['Model calls', count.format(model.calls)],

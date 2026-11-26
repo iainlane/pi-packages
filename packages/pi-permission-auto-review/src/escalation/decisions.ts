@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type { ExtensionAPI, SessionEntry } from '@earendil-works/pi-coding-agent'
 import type { EscalationDecision } from 'pi-bring-your-own-sandbox/consumer'
 import * as v from 'valibot'
 import { EXTENSION_ID } from '../config/config.js'
@@ -22,4 +22,13 @@ const entrySchema: v.GenericSchema<EscalationDecisionEntry> = v.strictObject({
 export function appendEscalationDecision(pi: Pick<ExtensionAPI, 'appendEntry'>, entry: EscalationDecisionEntry): void {
   const rationale = truncateToCharacters(entry.rationale, ESCALATION_RATIONALE_LIMIT)
   pi.appendEntry(ENTRY_TYPE, v.parse(entrySchema, { ...entry, rationale }))
+}
+
+export function readEscalationDecisions(entries: readonly SessionEntry[], filter?: string): EscalationDecisionEntry[] {
+  return entries.flatMap(entry => {
+    if (entry.type !== 'custom' || entry.customType !== ENTRY_TYPE) return []
+
+    const result = v.safeParse(entrySchema, entry.data)
+    return result.success && (filter === undefined || result.output.toolCallId === filter) ? [result.output] : []
+  })
 }

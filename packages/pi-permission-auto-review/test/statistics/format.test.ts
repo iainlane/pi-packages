@@ -349,10 +349,19 @@ describe('statistics presentation', () => {
     ])
   })
 
-  it.each(['\u0085', '‮', '\u{E0001}'])('escapes the terminal formatting character %j reversibly', character => {
-    const config = { ...DEFAULT_CONFIG, model: `model${character}value` }
-    const line = formatAutoStatus({ ...state, config }, sample()).split('\n')[1] ?? ''
+  it.each(['\u0085', '‮', '\u{E0001}', '\u2028', '\u2029'])(
+    'escapes the terminal formatting character %j reversibly',
+    character => {
+      const config = { ...DEFAULT_CONFIG, model: `model${character}value` }
+      const line = formatAutoStatus({ ...state, config }, sample()).split('\n')[1] ?? ''
 
-    expect(JSON.parse(line.slice('Model: '.length))).toBe(`${config.provider}/${config.model}`)
-  })
+      expect({
+        escaped: !line.includes(character),
+        model: JSON.parse(line.slice('Model: '.length)) as unknown,
+      }).toStrictEqual({
+        escaped: true,
+        model: `${config.provider}/${config.model}`,
+      })
+    },
+  )
 })

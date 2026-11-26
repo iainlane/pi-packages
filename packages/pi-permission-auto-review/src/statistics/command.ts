@@ -2,6 +2,7 @@ import type { AutoStatusState, StatisticsSectionView, StatusFormatOptions } from
 import type { StatisticsRecorder } from './recorder.js'
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent'
 import process from 'node:process'
+import { displayCommandOutput } from '../terminal.js'
 import { formatAutoStatus, hasStatusProblems, isStatisticsSection, STATISTICS_SECTIONS } from './format.js'
 
 type StatusRequest =
@@ -32,15 +33,6 @@ function parse(args: string): StatusRequest | undefined {
   const section = second ?? 'activity'
 
   return isStatisticsSection(section) ? { kind: 'section', view: { scope: first, section } } : undefined
-}
-
-/** Shows text to the person; in print mode stdout carries the agent's answer, so the report goes to stderr */
-function display(ctx: ExtensionCommandContext, message: string, severity: 'info' | 'warning'): void {
-  if (ctx.hasUI) {
-    ctx.ui.notify(message, severity)
-    return
-  }
-  process.stderr.write(`${message}\n`)
 }
 
 /** Asks for the scope and the section, or returns undefined when the person cancels or the session changes */
@@ -84,11 +76,11 @@ export function registerStatisticsCommand(
     async handler(args, ctx) {
       const request = parse(args)
       if (request === undefined) {
-        display(ctx, USAGE, 'warning')
+        displayCommandOutput(ctx, USAGE, 'warning')
         return
       }
       if (request.kind === 'details' && (ctx.mode !== 'tui' || !ctx.hasUI)) {
-        display(ctx, DIRECT_DETAILS, 'info')
+        displayCommandOutput(ctx, DIRECT_DETAILS, 'info')
         return
       }
       const interaction = recorder.interaction()
@@ -108,7 +100,11 @@ export function registerStatisticsCommand(
       }
       const data = { session: recorder.sessionTotals(), global: recorder.globalTotals() }
       const current = state()
-      display(ctx, formatAutoStatus(current, data, options), hasStatusProblems(current, data) ? 'warning' : 'info')
+      displayCommandOutput(
+        ctx,
+        formatAutoStatus(current, data, options),
+        hasStatusProblems(current, data) ? 'warning' : 'info',
+      )
     },
   })
 }
