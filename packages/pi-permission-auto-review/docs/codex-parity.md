@@ -20,10 +20,10 @@ flags are out of scope.
 
 [codex-release]: https://github.com/openai/codex/tree/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/ext/guardian-reviewer
 
-The sandbox SDK is pinned to [BYOS `4103d5b`][byos]. Load a provider extension
+The sandbox SDK is pinned to [BYOS `dafe8e3`][byos]. Load a provider extension
 separately; the SDK dependency does not activate a provider.
 
-[byos]: https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tree/4103d5b3a81822136d0aa5646a5b7342ef55b421/packages/sdk
+[byos]: https://github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tree/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af/packages/sdk
 
 ## What the host gives an authorizer
 
@@ -51,10 +51,9 @@ process and records these facts.
   the next authorizer or the human prompt.
 - Forwarded subagent asks defer, because the parent receives neither the
   child's input nor its transcript.
-- A write or edit whose path resolves, through any symlinks, into Pi's
-  settings or into this extension's or pi-permission-system's configuration
-  defers. The policy treats such a change made through a shell command as
-  permission tampering.
+- A write or edit defers when its path resolves into Pi's configuration and
+  extension directories, including through a symlink. The policy treats a
+  shell command that changes those settings as permission tampering.
 - The extension records in its own session entries whether each user
   message came from the interactive UI, RPC or an extension. With the `codex`
   preset, only a message from the interactive UI or RPC counts as the user's.
@@ -138,16 +137,17 @@ interrupts the run.
 
 Codex's reviewer can run read-only commands in a managed sandbox to check local
 facts, such as whether a file exists or where a repository's remote points.
-The Pi reviewer asks the active BYOS shell route for the destination of the
-specific local tool call. Load a provider that supports copies and the BYOS
-shell routing extension before the permission gate. The router answers the
-versioned `pi-byos:review:tool-call:v2` event while that call is pending.
+The Pi reviewer uses its BYOS client to resolve the destination of the pending
+local tool call. The provider can load before or after pi-permission-system.
+The BYOS route records the call at `tool_execution_start`, which Pi awaits
+before it runs `tool_call` permission handlers.
 
 The first investigation call opens a fresh private copy of the files that the
 proposed command will see: the host checkout or the workspace of the proposed
 sandbox allocation. The reviewer cannot run commands in the destination itself.
-The copy must guarantee that the reviewer cannot write to the copy's workspace,
-that networking is denied and that host user data is inaccessible. It must also
+The copy must prevent writes to the host workspace, deny networking and exclude
+host user data. The provider decides whether the copy accepts writes, which stay
+in the copy. The copy must also
 support file reads, POSIX shell execution, guaranteed exit status and
 process-group or workload termination. BYOS rejects a copy that does not meet
 these requirements. The provider may let the copy read operating-system and

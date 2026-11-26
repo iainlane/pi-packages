@@ -1,20 +1,19 @@
-import type { ProposedTool, ReviewRoutes } from './review-route.js'
 import type { Tool, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
+import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import type {
   ProcessResult,
   Sandbox,
   SandboxCloseReport,
+  SandboxClient,
   SandboxContext,
-  SandboxCopyOptions,
-  SandboxHost,
+  SandboxRequirements,
   ShellReviewSource,
-} from 'pi-bring-your-own-sandbox/api'
+} from 'pi-bring-your-own-sandbox/consumer'
 import { Buffer } from 'node:buffer'
 import { isAbsolute, posix, relative, sep } from 'node:path'
-import { isSandboxError, SandboxCleanupError } from 'pi-bring-your-own-sandbox/api'
+import { isSandboxError, SandboxCleanupError } from 'pi-bring-your-own-sandbox/consumer'
 import { Type } from 'typebox'
 import * as v from 'valibot'
-import { reviewRoutes } from './review-route.js'
 
 interface UnconfirmedCleanup {
   readonly failure: 'unconfirmed'
@@ -40,16 +39,16 @@ const BUDGET_EXHAUSTED = 'Not run: the investigation budget for this review is e
 // Codex infers a refusal from a failed command whose own output reports a denial. The word "sandbox" alone also
 // appears in ordinary errors, so it does not count
 const REFUSAL = /operation not permitted|permission denied|read-only file system/i
-// Leave out `no-host-system-files`: native providers need system files to start a shell. BYOS still gives the copy the
-// strictest filesystem scope that the provider supports
 const COPY_REQUIREMENTS = {
-  guarantees: ['no-workspace-writes', 'no-network', 'no-host-user-data'],
+  access: { network: 'prevented', hostUserData: 'prevented', hostWorkspaceWrites: 'prevented' },
   capabilities: ['exec', 'files.read'],
   shells: ['sh'],
   processKinds: ['shell'],
   exitStatus: 'guaranteed',
   terminationScope: 'process-group',
-} as const satisfies SandboxCopyOptions
+} as const satisfies SandboxRequirements
+
+type ProposedTool = Pick<PromptPermissionDetails, 'source' | 'toolCallId' | 'toolName' | 'forwarding'>
 
 export type InvestigationAvailability = { available: true } | { available: false; reason: string }
 
@@ -88,7 +87,7 @@ const TOOLS: Tool[] = [
   {
     name: 'shell',
     description:
-      'Inspect local state with one POSIX shell command in a read-only sandbox without network access. It runs in the workspace root. Never execute or simulate the proposed action.',
+      'Inspect local state with one POSIX shell command in the root of a private copy without network access. Use read-only commands. Never execute or simulate the proposed action.',
     parameters: Type.Object({ command: Type.String() }),
   },
   {
@@ -219,12 +218,10 @@ async function readText(
 export class Investigation {
   private context: SandboxContext | undefined
 
-  private readonly pi: SandboxHost
-  private readonly routes: ReviewRoutes
+  private readonly client: Pick<SandboxClient, 'hasShellReviewRoute' | 'findShellReviewSource'>
 
-  constructor(pi: SandboxHost, routes: ReviewRoutes = reviewRoutes) {
-    this.pi = pi
-    this.routes = routes
+  constructor(client: Pick<SandboxClient, 'hasShellReviewRoute' | 'findShellReviewSource'>) {
+    this.client = client
   }
 
   start(context: SandboxContext): void {
@@ -232,7 +229,7 @@ export class Investigation {
   }
 
   async availability(): Promise<InvestigationAvailability> {
-    const available = this.context !== undefined && this.routes.available(this.pi)
+    const available = this.context !== undefined && this.client.hasShellReviewRoute()
     return Promise.resolve(
       available ? { available: true } : { available: false, reason: UNAVAILABLE_REASONS['no-session-route'] },
     )
@@ -240,8 +237,21 @@ export class Investigation {
 
   forReview(signal: AbortSignal, tool: ProposedTool): InvestigationRun {
     const context = this.context
-    const source = context === undefined ? undefined : this.routes.resolve(this.pi, context, tool)
-    return new InvestigationRun(signal, context?.cwd ?? '', source)
+    const { toolName, toolCallId } = tool
+    if (
+      context === undefined ||
+      tool.forwarding !== undefined ||
+      tool.source !== 'tool_call' ||
+      toolName === undefined ||
+      toolName === '' ||
+      toolCallId === undefined ||
+      toolCallId === ''
+    ) {
+      return new InvestigationRun(signal, context?.cwd ?? '', undefined)
+    }
+
+    const lookup = this.client.findShellReviewSource(context, { toolName, toolCallId })
+    return new InvestigationRun(signal, context.cwd, lookup.ok ? lookup.source : undefined)
   }
 }
 

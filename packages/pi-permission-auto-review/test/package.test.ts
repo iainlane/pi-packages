@@ -26,7 +26,7 @@ it('ships the sandbox SDK without bundling host-provided packages', () => {
         file =>
           file.startsWith('package/node_modules/') &&
           (file.endsWith('/package.json') ||
-            /^package\/node_modules\/pi-bring-your-own-sandbox\/src\/(?:api|contracts|pi-tools|testing)\.ts$/.test(
+            /^package\/node_modules\/pi-bring-your-own-sandbox\/src\/(?:api|consumer|contracts|pi-tools|provider|testing)\.ts$/.test(
               file,
             )),
       )
@@ -34,9 +34,10 @@ it('ships the sandbox SDK without bundling host-provided packages', () => {
 
     expect(packageFiles).toStrictEqual([
       'package/node_modules/pi-bring-your-own-sandbox/package.json',
-      'package/node_modules/pi-bring-your-own-sandbox/src/api.ts',
+      'package/node_modules/pi-bring-your-own-sandbox/src/consumer.ts',
       'package/node_modules/pi-bring-your-own-sandbox/src/contracts.ts',
       'package/node_modules/pi-bring-your-own-sandbox/src/pi-tools.ts',
+      'package/node_modules/pi-bring-your-own-sandbox/src/provider.ts',
       'package/node_modules/pi-bring-your-own-sandbox/src/testing.ts',
     ])
   } finally {

@@ -20,6 +20,7 @@ import {
   PERMISSIONS_DECISION_CHANNEL,
   PERMISSIONS_READY_CHANNEL,
 } from '@gotgenes/pi-permission-system'
+import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer'
 import { ActionCapture } from './action/capture.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
@@ -103,7 +104,7 @@ function statusText(current: Generation, tally: Tally, investigation: Investigat
 export default function permissionAutoReview(pi: ExtensionAPI): void {
   const actions = new ActionCapture(pi)
   const provenance = new UserMessageProvenance(pi)
-  const investigation = new Investigation(pi)
+  const investigation = new Investigation(createSandboxClient(pi, import.meta.filename))
   const recorder = new StatisticsRecorder(pi, {
     directory: () => join(getAgentDir(), 'extensions', EXTENSION_ID, 'statistics'),
   })

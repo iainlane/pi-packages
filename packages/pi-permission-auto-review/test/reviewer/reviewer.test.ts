@@ -2,8 +2,8 @@ import type { LateUsage } from '../../src/statistics/calls.js'
 import type { ReviewReport } from '../../src/statistics/recorder.js'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
-import type { SandboxCloseReport } from 'pi-bring-your-own-sandbox/api'
-import { SandboxCleanupError, SandboxOperationError } from 'pi-bring-your-own-sandbox/api'
+import type { SandboxCloseReport, SandboxErrorInfo } from 'pi-bring-your-own-sandbox/consumer'
+import { SandboxCleanupError } from 'pi-bring-your-own-sandbox/consumer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { POLICY_REVISION } from '../../src/presets/codex/policy.js'
 import {
@@ -667,7 +667,10 @@ describe('permission reviewer', () => {
       instructions: 'Remove the fixture copy.',
       lease: 'manual cleanup',
     } as const
-    const failure = new SandboxOperationError({ operation: 'dispose' })
+    const failure: SandboxErrorInfo = Object.assign(new Error('The sandbox operation failed.'), {
+      name: 'SandboxOperationError',
+      operation: 'dispose',
+    } as const)
     const report: SandboxCloseReport = { confirmed: false, recoveries: [recovery], failures: [failure] }
     const reportDetails = {
       recoveries: [recovery],

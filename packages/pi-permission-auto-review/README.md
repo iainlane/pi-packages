@@ -42,10 +42,8 @@ complete tool input before the authorizer runs.
 
 For investigation, install a BYOS provider with copy support. For example,
 with a built MXC checkout, run `pi install ~/src/pi-byos-mxc`.
-List the provider before pi-permission-system in `packages` so its shell
-route can record the pending call before the reviewer asks about it.
-`pi install` appends new packages, so move the provider up if you installed
-it later.
+The provider can load before or after pi-permission-system. Pi waits for the
+provider to record the pending call before it runs the permission hooks.
 
 Put the entries in your personal settings as shown below. In
 `~/.pi/agent/settings.json`, Pi records the MXC checkout relative
@@ -53,14 +51,14 @@ to the agent directory.
 
 ```json
 {
-  "packages": ["../../src/pi-byos-mxc", "npm:@mzwing/pi-permission-auto-review", "npm:@gotgenes/pi-permission-system"]
+  "packages": ["npm:@mzwing/pi-permission-auto-review", "npm:@gotgenes/pi-permission-system", "../../src/pi-byos-mxc"]
 }
 ```
 
 Pi loads `-e` extensions and extensions from settings or extension directories
 before packages. It loads project packages before personal packages. If
 pi-permission-system loads from an earlier source, reordering the personal
-`packages` list cannot put the provider before it.
+`packages` list cannot put auto-review before it.
 
 Then add the reviewer to pi-permission-system's authorizer chain, normally in
 `~/.pi/agent/extensions/pi-permission-system/config.json`:
@@ -141,21 +139,16 @@ tokens, oldest first. If that is not enough, the ask comes to you.
 
 ## Investigation
 
-With the `codex` preset, the reviewer can inspect a read-only copy of the
-proposed command's workspace. Follow the [install order][install] for your
-[BYOS provider][investigation]. MXC registers its own shell routes. If your
-provider needs a separate shell routing extension, load that extension before
-pi-permission-system too. The first investigation call opens the copy. Later
-calls in that review use the same copy. The reviewer attempts to close it when
-the review ends. Networking is denied.
+With the `codex` preset, the reviewer can inspect a [private copy][investigation]
+of the proposed command's workspace. The copy blocks network access, access to
+host user data and writes to the host workspace. The first investigation call
+opens the copy. Later calls in that review use the same copy. The reviewer
+attempts to close it when the review ends.
 
-A command in a private Docker workspace is reviewed against the edits in that
-workspace. A command routed to the host is reviewed against the host checkout.
 BYOS supplies routes for its Bash and PowerShell tools. The reviewer uses the
 transcript for native file tools and other unrouted calls. A failed copy also
 falls back to the transcript. The decision log records the reason.
 
-[install]: #install
 [investigation]: docs/codex-parity.md#investigation
 
 ## Running a refused command anyway

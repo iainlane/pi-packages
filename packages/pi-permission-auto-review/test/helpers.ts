@@ -10,7 +10,7 @@ import type {
   PermissionQuery,
   PromptPermissionDetails,
 } from '@gotgenes/pi-permission-system'
-import type { SandboxCloseReport } from 'pi-bring-your-own-sandbox/api'
+import type { SandboxCloseReport, ShellReviewSource } from 'pi-bring-your-own-sandbox/consumer'
 import type { Mock } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -184,6 +184,8 @@ async function unexpected(): Promise<never> {
 export const reviewWorkspace = {
   providerId: 'fixture',
   backendId: 'review',
+  generationId: 'generation',
+  cleanupBudgets: { cancellationGraceMs: 5_000, disposalTimeoutMs: 10_000 },
   exec: async (): Promise<never> => unexpected(),
   copy: async (): Promise<never> => unexpected(),
   files: {
@@ -196,8 +198,9 @@ export const reviewWorkspace = {
     updateText: async (): Promise<never> => unexpected(),
   },
   search: { find: async (): Promise<never> => unexpected(), grep: async (): Promise<never> => unexpected() },
-  workspace: { root: '/project', pathFlavor: 'posix', relationship: 'copied' },
-  policy: { workspaceAccess: 'read-only', filesystemScope: 'workspace-only', networkAccess: 'denied' },
+  workspace: { root: '/project', pathFlavor: 'posix', relationship: 'copied', description: 'Private copy fixture.' },
+  policy: { hostWorkspaceWrites: false, network: false, hostUserData: 'denied', hostSystemFiles: 'denied' },
+  policyDescription: 'Fixture only, with no OS isolation.',
   capabilities: {
     exitStatus: 'guaranteed',
     terminationScope: 'workload',
@@ -207,14 +210,34 @@ export const reviewWorkspace = {
   },
 } as const
 
+export function reviewSource(copy: ShellReviewSource['copy']): ShellReviewSource {
+  const { providerId, workspace, policy, capabilities } = reviewWorkspace
+  return {
+    destination: { providerId, label: 'Review fixture', workspace, policy },
+    negotiateCopy: async () => ({
+      ok: true,
+      profile: {
+        policy,
+        capabilities: capabilities.operations,
+        processKinds: capabilities.processKinds,
+        shells: capabilities.shells,
+        exitStatus: capabilities.exitStatus,
+        terminationScope: capabilities.terminationScope,
+      },
+    }),
+    copy,
+  }
+}
+
 /** A session investigation whose sandbox answers every shell command with `stdout`, or which none can serve */
 export function fakeInvestigation(
   sandbox: { stdout: string; beforeOpen?: Promise<void>; close?: () => Promise<SandboxCloseReport> } | 'unavailable',
 ): Investigation {
-  const investigation = new Investigation({} as never, {
-    available: () => sandbox !== 'unavailable',
-    resolve: () => ({
-      copy: async () => {
+  const investigation = new Investigation({
+    hasShellReviewRoute: () => sandbox !== 'unavailable',
+    findShellReviewSource: () => ({
+      ok: true,
+      source: reviewSource(async () => {
         if (sandbox !== 'unavailable') await sandbox.beforeOpen
         return {
           sandbox: {
@@ -232,7 +255,7 @@ export function fakeInvestigation(
               ? { confirmed: true, recoveries: [], failures: [] }
               : sandbox.close(),
         }
-      },
+      }),
     }),
   })
   investigation.start({ cwd: '/workspace', sessionManager: {} } as never)
@@ -368,7 +391,8 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
 
   const start: ReviewStart = (requestId = 'request-1', details = {}) => {
     const review = vi.fn<AuthorizerLog['review']>()
-    const verdict = reviewer.authorize(permissionDetails({ requestId, ...details }), {} as PermissionQuery, {
+    const call = options.investigation === undefined ? {} : { toolCallId: 'call-1' }
+    const verdict = reviewer.authorize(permissionDetails({ requestId, ...call, ...details }), {} as PermissionQuery, {
       review,
       debug: vi.fn(),
     })

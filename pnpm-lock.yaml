@@ -278,8 +278,8 @@ importers:
   packages/pi-permission-auto-review:
     dependencies:
       pi-bring-your-own-sandbox:
-        specifier: github:underwhelmingperformance/pi-bring-your-own-sandbox#4103d5b3a81822136d0aa5646a5b7342ef55b421&path:/packages/sdk
-        version: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/4103d5b3a81822136d0aa5646a5b7342ef55b421#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))
+        specifier: github:underwhelmingperformance/pi-bring-your-own-sandbox#dafe8e3820b59ca8c5e5c774fadc7e39a5f702af&path:/packages/sdk
+        version: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1)))
     devDependencies:
       '@earendil-works/pi-ai':
         specifier: 1.5.0
@@ -2600,8 +2600,8 @@ packages:
     resolution: {integrity: sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==}
     engines: {node: '>=8'}
 
-  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/4103d5b3a81822136d0aa5646a5b7342ef55b421#path:/packages/sdk:
-    resolution: {gitHosted: true, integrity: sha512-BFxIRm79rkcEQrPMqovsd6CBnv6PR57LXfHLrs/7zLPIUmLGj6O0Awe5SH/Jv6DReoq7FKWkOu+Otk16XQ2wRA==, path: /packages/sdk, tarball: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/4103d5b3a81822136d0aa5646a5b7342ef55b421}
+  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af#path:/packages/sdk:
+    resolution: {gitHosted: true, integrity: sha512-YsCXx3IMM24TYUzgQTa1A/SZthXc8jB2qYDX60NJ8d2CIBXWO1FqdrOmD/6IOdnqQ5Nsc7uU4DS+RE5SVqB9Ug==, path: /packages/sdk, tarball: https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af}
     version: 0.0.0
     engines: {node: '>=24'}
     peerDependencies:
@@ -5267,7 +5267,7 @@ snapshots:
 
   path-key@3.1.1: {}
 
-  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/4103d5b3a81822136d0aa5646a5b7342ef55b421#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))):
+  pi-bring-your-own-sandbox@https://codeload.github.com/underwhelmingperformance/pi-bring-your-own-sandbox/tar.gz/dafe8e3820b59ca8c5e5c774fadc7e39a5f702af#path:/packages/sdk(@earendil-works/pi-coding-agent@1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7))(typebox@1.4.3)(vitest@5.0.5(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(yaml@2.9.1))):
     dependencies:
       '@earendil-works/pi-coding-agent': 1.5.0(@aws-sdk/credential-provider-node@3.972.91)(@smithy/signature-v4@5.7.5)(ws@8.22.0)(zod@4.6.7)
       typebox: 1.4.3

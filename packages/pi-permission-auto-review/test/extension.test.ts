@@ -7,6 +7,7 @@ import type {
   PermissionsReadyEvent,
   PermissionsService,
 } from '@gotgenes/pi-permission-system'
+import type { SandboxCopy, ShellReviewSource } from 'pi-bring-your-own-sandbox/consumer'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildSessionProjection, getAgentDir } from '@earendil-works/pi-coding-agent'
@@ -15,18 +16,29 @@ import {
   publishPermissionsService,
   unpublishPermissionsService,
 } from '@gotgenes/pi-permission-system'
+import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EXTENSION_ID } from '../src/config/config.js'
 import { configPath } from '../src/config/store.js'
 import permissionAutoReview from '../src/index.js'
 import { STATISTICS_ENTRY_TYPE } from '../src/statistics/records.js'
 import { GlobalStatisticsStore } from '../src/statistics/store.js'
-import { investigationReply, permissionDetails, reply, reviewWorkspace, useWorkspace, writeFile } from './helpers.js'
+import {
+  investigationReply,
+  permissionDetails,
+  reply,
+  reviewSource,
+  reviewWorkspace,
+  useWorkspace,
+  writeFile,
+} from './helpers.js'
+
+vi.mock(import('pi-bring-your-own-sandbox/consumer'), async importOriginal => ({
+  ...(await importOriginal()),
+  createSandboxClient: vi.fn(),
+}))
 
 let hasRoute = true
-interface ReviewSource {
-  copy: () => Promise<unknown>
-}
 
 type Handler = (...arguments_: unknown[]) => unknown
 type Authorize = Authorizer['authorize']
@@ -75,7 +87,11 @@ describe('permission auto-review extension', () => {
     return { registry, streamSimple }
   }
 
-  function start(registry: ModelRegistry = reviewRegistry(DENY).registry, projectTrusted = true, route?: ReviewSource) {
+  function start(
+    registry: ModelRegistry = reviewRegistry(DENY).registry,
+    projectTrusted = true,
+    route?: Pick<ShellReviewSource, 'copy'>,
+  ) {
     const handlers = new Map<string, Handler[]>()
     const eventHandlers = new Map<string, Handler[]>()
     const commands = new Map<string, Omit<RegisteredCommand, 'name' | 'sourceInfo'>>()
@@ -88,14 +104,7 @@ describe('permission auto-review extension', () => {
       getAllTools: () => [],
       events: {
         on: (name: string, handler: Handler) => add(eventHandlers, name, handler),
-        emit: (channel: string, request: { kind?: string; reply: (route?: ReviewSource) => void }) => {
-          if (channel !== 'pi-byos:review:tool-call:v2' || !hasRoute) return
-          if (request.kind === 'available') {
-            request.reply()
-          } else if (route !== undefined) {
-            request.reply(route)
-          }
-        },
+        emit: vi.fn(),
       },
       registerCommand: (name: string, options: Omit<RegisteredCommand, 'name' | 'sourceInfo'>) => {
         commands.set(name, options)
@@ -103,6 +112,14 @@ describe('permission auto-review extension', () => {
       appendEntry,
       registerTool: vi.fn(),
     }
+    vi.mocked(createSandboxClient).mockReturnValue({
+      get: vi.fn(),
+      negotiate: vi.fn(),
+      hasShellReviewRoute: () => hasRoute,
+      findShellReviewSource: () =>
+        route === undefined ? { ok: false, reason: 'unknown-call' } : { ok: true, source: reviewSource(route.copy) },
+      recordEscalationDecision: vi.fn(),
+    })
     permissionAutoReview(pi as unknown as ExtensionAPI)
 
     const emit = (name: string, ...arguments_: unknown[]): void => {
@@ -330,7 +347,7 @@ describe('permission auto-review extension', () => {
     })
   })
 
-  function reviewCopy() {
+  function reviewCopy(): SandboxCopy {
     return {
       sandbox: {
         ...reviewWorkspace,
