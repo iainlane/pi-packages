@@ -175,7 +175,7 @@ function targetPath(sandbox: Sandbox, cwd: string, path: string): string {
     return path
   }
   const inside = relative(cwd, path)
-  if (inside.startsWith('..') || isAbsolute(inside)) {
+  if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
     return path
   }
 

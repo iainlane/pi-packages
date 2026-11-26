@@ -191,7 +191,11 @@ describe('investigation', () => {
     }).toStrictEqual({ refused, counted: refused ? 1 : 0 })
   })
 
-  it('reads the selected lines of a UTF-8 file, mapping a path in the host workspace to the target', async () => {
+  it.each([
+    { path: '/home/user/repo/src/a.ts', target: '/project/src/a.ts' },
+    { path: '/home/user/repo/..notes', target: '/project/..notes' },
+    { path: '/home/user/notes', target: '/home/user/notes' },
+  ])('reads selected lines of a UTF-8 file at $path', async ({ path, target }) => {
     const { investigation, operations } = setup({
       sandbox: {
         files: {
@@ -200,14 +204,11 @@ describe('investigation', () => {
         },
       },
     })
-    const { result } = await runOne(
-      investigation,
-      call('read', { path: '/home/user/repo/src/a.ts', offset: 2, limit: 2 }),
-    )
+    const { result } = await runOne(investigation, call('read', { path, offset: 2, limit: 2 }))
 
     expect({ result, operations }).toStrictEqual({
       result: { text: 'two\nthree', isError: false },
-      operations: ['copy', 'stat /project/src/a.ts', 'read /project/src/a.ts'],
+      operations: ['copy', `stat ${target}`, `read ${target}`],
     })
   })
 
