@@ -194,19 +194,23 @@ command and destination. The host has no sandbox restrictions. When the review
 returns a current allow or deny, BYOS uses that verdict for the pending tool
 call. The `claude-code` preset always defers an escalation.
 
-For a deferred Bash or PowerShell ask, the pi-permission-system prompt appears
-first. If the user approves the call, BYOS then asks the user to confirm the
-escalation. The PowerShell prompt can preview the escalation terms, but
-pi-permission-system can clip or omit them and does not report what it displayed.
-Its Bash prompt does not use registered input formatters. In either shell, the
-permission prompt cannot decide the escalation.
+With the [sandbox setup][byos-setup], pi-permission-system allows sandboxed
+commands by rule. The `codex` preset reviews the escalation directly, so a
+current allow or deny needs no confirmation. BYOS still asks the user to
+confirm a deferred escalation. If a permission rule also requires the user
+to approve the command, that prompt comes first. The Bash prompt does not
+use registered input formatters. The PowerShell prompt can clip or omit the
+escalation terms, and the permission system does not report which terms
+appeared. Approval of the command leaves a deferred escalation for BYOS to
+confirm.
 
-The decision log and `/auto-escalations [tool-call-id]` show the automatic
-verdict and rationale under the tool call ID. When BYOS diagnostics are loaded,
-`/byos log` also shows the broker's outcomes, including its confirmation and
-expiry results.
+Auto-review records the verdict and rationale in the session under the tool
+call ID. Use `/auto-escalations [tool-call-id]` to see these decisions. When
+BYOS diagnostics are loaded, `/byos log` also shows the broker's outcomes,
+including its confirmation and expiry results.
 
 [codex-shell-approval]: https://github.com/openai/codex/blob/6ff1e1ca3b30fc8b914720681fcf5fe62e95f856/codex-rs/core/src/tools/handlers/shell_spec.rs#L225-L252
+[byos-setup]: ../README.md#sandbox-escalations
 
 ## Interaction answers
 

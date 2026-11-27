@@ -60,8 +60,8 @@ before packages. It loads project packages before personal packages. If
 pi-permission-system loads from an earlier source, reordering the personal
 `packages` list cannot put auto-review before it.
 
-Then add the reviewer to pi-permission-system's authorizer chain, normally in
-`~/.pi/agent/extensions/pi-permission-system/config.json`:
+To review permission asks, add auto-review to pi-permission-system's authorizer
+chain in `~/.pi/agent/extensions/pi-permission-system/config.json`:
 
 ```json
 {
@@ -74,9 +74,9 @@ The `codex` preset uses Pi's `openai` provider. Run `/login openai` and choose
 `"provider": "openai-codex"` configuration still uses the separate Codex login.
 The `claude-code` preset needs an `anthropic` login.
 
-The reviewer only sees the asks that your pi-permission-system rules send to
-it. Claude Code approves most reads and edits inside the project without its
-reviewer; to do the same, allow them in pi-permission-system's own rules.
+For ordinary calls, the reviewer sees the asks that your pi-permission-system
+rules send to it. Claude Code approves most reads and edits inside the project
+without its reviewer. To do the same, allow them in pi-permission-system's rules.
 
 ## Configuration
 
@@ -99,16 +99,17 @@ conversation.
 
 ## What the reviewer decides
 
-- `allow`: the call runs.
+- `allow`: the reviewer approves the action. The permission gate and BYOS
+  still apply their policies.
 - `deny`: the call is refused, and the agent receives the reason with an
   instruction not to work around it.
-- `defer`: pi-permission-system moves to the next authorizer in the chain or
-  asks you. The reviewer defers when it cannot decide: the model failed or
-  timed out, the call's input was not captured, the ask came from a subagent,
-  the write or edit targets Pi's configuration and extension directories, or
-  your messages changed while the review ran. These directories are the agent
-  directory and the project's `.pi/`. Pi loads settings, packages and
-  extensions from them without a sandbox.
+- `defer`: for a permission ask, pi-permission-system moves to the next
+  authorizer in the chain or asks you. The reviewer defers when the model
+  fails or times out, the call's input is unavailable, the ask comes from
+  a subagent, the write or edit targets Pi's configuration and extension
+  directories, or your messages change during review. These directories are
+  the agent directory and the project's `.pi/`. Pi loads settings, packages
+  and extensions from them without a sandbox.
 - When you interrupt the turn, a review in progress ends with a refusal, so you
   are not asked about a turn that you have just stopped.
 
@@ -117,9 +118,11 @@ reviews, stop the agent, as in Codex: the extension warns you, interrupts the
 turn, and refuses further asks without review until the next run. The
 `claude-code` preset passes the ask that reaches its limit to you.
 
-The footer shows whether the reviewer is registered, and how many asks it has
-allowed, denied and deferred in the session. With the `codex` preset, the
-footer also shows the most recent investigation outcome.
+The footer and `/auto-stats` show whether the reviewer is registered and
+whether pi-permission-system has sent it an ask in this session. They show
+the load order to use if an ask arrived before capture. The footer counts
+automatic allows, denials and deferrals. With the `codex` preset, it also
+shows the most recent investigation outcome.
 
 ## What counts as your instruction
 
@@ -158,14 +161,38 @@ extra access. The `codex` preset reviews the destination and restrictions that
 BYOS chose for the call. A host destination runs without a sandbox. The agent
 writes the justification, which cannot authorize the request.
 
-The `claude-code` preset defers every BYOS escalation. For a deferred Bash or
-PowerShell ask, you see the pi-permission-system prompt first. If you approve
-the call, BYOS then asks you to confirm the escalation.
+With BYOS providing an active sandbox for the shell tools, configure
+pi-permission-system to allow sandboxed commands. For example, merge these
+rules into the pi-permission-system config:
 
-The PowerShell permission prompt can preview the escalation. The dialog can
-clip or omit those details, and the pi-permission-system decision does not
-report which details appeared. The Bash prompt does not use registered input
-formatters. BYOS therefore confirms the escalation separately for both shells.
+```json
+{
+  "authorizerChain": ["auto-review"],
+  "permission": {
+    "bash": { "*": "allow" },
+    "powershell": "allow"
+  }
+}
+```
+
+These rules apply even when no sandbox is active. Use them only with an
+active BYOS sandbox for the shell tools. Other permission rules, such as a
+path rule, can still require a separate decision. The authorizer chain routes
+those asks to auto-review.
+
+BYOS runs ordinary commands under the sandbox policy without a confirmation.
+The `codex` preset reviews pending escalations during tool capture, including
+commands that pi-permission-system allows by rule. A current automatic allow
+or deny decides the escalation without a confirmation. If the review defers
+or the `claude-code` preset is active, BYOS asks you to confirm the escalation
+before it grants the extra access.
+
+If a permission rule asks about the command and the ask reaches you, that
+prompt comes first. The Bash prompt does not use registered input formatters.
+The PowerShell prompt can preview the escalation, but can clip or omit its
+terms. The permission system does not report which terms appeared. The answer
+to the command prompt cannot decide the escalation, so BYOS still asks you
+to confirm a deferred escalation after you approve the command.
 
 Run `/auto-escalations` to see the automatic decisions and rationales from the
 current session. Pass a tool call ID to filter the list.
@@ -187,8 +214,8 @@ be a new escalation that BYOS would need to decide separately.
 
 ## Statistics
 
-`/auto-stats` compares this session with your whole Pi profile: how many asks
-the reviewer allowed, refused and left to you, and the estimated cost.
+`/auto-stats` compares automatic allows, denials, deferrals and estimated
+review cost for this session and your whole Pi profile.
 `/auto-stats details` opens one section for either scope: activity, tokens and
 cost, human approvals, models, or recording problems. `/auto-stats text` prints
 every section as plain text. See [statistics][status] for the commands that
