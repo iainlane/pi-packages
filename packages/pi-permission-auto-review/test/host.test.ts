@@ -65,6 +65,7 @@ const permissionSystem = await createJiti(import.meta.url, { moduleCache: false,
 
 interface HostOptions {
   call: ToolCall
+  setStatus?: ExtensionUIContext['setStatus']
   deny?: boolean
   extensionFactory?: ExtensionFactory
   permission?: Record<string, PermissionState | Record<string, PermissionState>>
@@ -309,6 +310,7 @@ describe('auto-review in the Pi host', () => {
 
   async function runHost({
     call,
+    setStatus,
     deny = false,
     extensionFactory,
     permission,
@@ -510,6 +512,7 @@ describe('auto-review in the Pi host', () => {
                   method => [method, () => undefined],
                 ),
               ),
+              ...(setStatus === undefined ? {} : { setStatus }),
               confirm,
               select,
             } as never,
@@ -724,15 +727,23 @@ describe('auto-review in the Pi host', () => {
   it('defers without reviewing or executing when loaded after permission-system', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const call = fauxToolCall('write', { path: 'late.txt', content: 'must not execute' }, { id: 'late-write' })
-    const result = await runHost({ call, reviewPosition: 'after' })
+    const setStatus = vi.fn<ExtensionUIContext['setStatus']>()
+    const select = vi.fn<ExtensionUIContext['select']>().mockResolvedValue(undefined)
+    const result = await runHost({ call, reviewPosition: 'after', setStatus, select })
     const request = writeRequest(call.id, 'late.txt', "for 'late.txt' (1 line, 16 characters)")
 
-    expect(normalise({ ...result, written: existsSync(join(workspace.cwd, 'late.txt')) })).toStrictEqual({
+    expect(
+      normalise({ ...result, written: existsSync(join(workspace.cwd, 'late.txt')), footer: setStatus.mock.lastCall }),
+    ).toStrictEqual({
       details: [{ ...request, origin: 'global', command: undefined, target: undefined }],
       prompts: [],
       events: [{ authorizer: call.id }],
       reviewerCalls: 0,
       written: false,
+      footer: [
+        'pi-permission-auto-review',
+        'auto-review selected · ask arrived before capture · load auto-review first · 1 deferred · no tool route provides review copies',
+      ],
     })
   })
 

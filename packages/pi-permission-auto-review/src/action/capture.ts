@@ -202,6 +202,10 @@ export class ActionCapture {
     this.observers.add(observer)
   }
 
+  hasInvocation(toolCallId: string): boolean {
+    return this.entries.has(toolCallId)
+  }
+
   invocation(toolCallId: string): CapturedInvocation | undefined {
     const entry = this.entries.get(toolCallId)
     if (entry === undefined) {

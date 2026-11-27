@@ -1,5 +1,6 @@
 import type { ActivationResult } from './config/command.js'
 import type { AutoReviewConfig } from './config/config.js'
+import type { AuthorizerStatus, PermissionObservation } from './config/status.js'
 import type { LoadConfigResult } from './config/store.js'
 import type { InvestigationOutcome } from './investigation/investigation.js'
 import type { ContextFile } from './presets/presets.js'
@@ -26,6 +27,7 @@ import { ActionCapture } from './action/capture.js'
 import { escalationCall } from './action/request.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
+import { AUTHORIZER_STATUS } from './config/status.js'
 import { configPath, loadConfig } from './config/store.js'
 import { registerEscalationCommand } from './escalation/command.js'
 import { appendEscalationDecision } from './escalation/decisions.js'
@@ -93,18 +95,14 @@ function investigates(config: AutoReviewConfig | undefined): boolean {
   return config !== undefined && PRESETS[config.preset].investigates
 }
 
-function statusText(current: Generation, tally: Tally, investigation: InvestigationOutcome | undefined): string {
-  if (current.config === undefined) {
-    return `${AUTHORIZER_NAME} inactive: invalid config`
-  }
-  if (current.dispose === undefined) {
-    return `${AUTHORIZER_NAME} inactive`
-  }
-  const counts = VERDICT_LABELS.flatMap(([kind, label]) => (tally[kind] > 0 ? [`${tally[kind]} ${label}`] : []))
-  const outcome =
-    investigates(current.config) && investigation !== undefined ? [formatInvestigationOutcome(investigation)] : []
+function statusText(status: AuthorizerStatus, tally: Tally, investigation: InvestigationOutcome | undefined): string {
+  const { footer } = AUTHORIZER_STATUS[status]
+  if (status === 'invalid-config' || status === 'unregistered') return footer
 
-  return [`${AUTHORIZER_NAME} ready`, ...counts, ...outcome].join(' · ')
+  const counts = VERDICT_LABELS.flatMap(([kind, label]) => (tally[kind] > 0 ? [`${tally[kind]} ${label}`] : []))
+  const outcome = investigation === undefined ? [] : [formatInvestigationOutcome(investigation)]
+
+  return [footer, ...counts, ...outcome].join(' · ')
 }
 
 export default function permissionAutoReview(pi: ExtensionAPI): void {
@@ -121,6 +119,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   let investigationOutcome: InvestigationOutcome | undefined
   let sessionStarts = 0
   let generation: Generation | undefined
+  let observation: PermissionObservation = 'registered'
   let tally: Tally = { allow: 0, deny: 0, defer: 0 }
   // As the latest run loaded them, which is what the agent itself was told
   let contextFiles: readonly ContextFile[] = []
@@ -192,8 +191,15 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     }
   }
 
+  function authorizerStatus(current: Generation | undefined): AuthorizerStatus {
+    if (current?.config === undefined) return 'invalid-config'
+
+    return current.dispose === undefined ? 'unregistered' : observation
+  }
+
   function renderStatus(current: Generation): void {
-    setFooterStatus(current.runtime, statusText(current, tally, investigationOutcome))
+    const outcome = investigates(current.config) ? investigationOutcome : undefined
+    setFooterStatus(current.runtime, statusText(authorizerStatus(current), tally, outcome))
   }
 
   async function trackReview(current: Generation, start: () => Promise<AuthorizerVerdict>): Promise<AuthorizerVerdict> {
@@ -265,6 +271,21 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
       sessionSignal,
       reviewer,
       authorize: async (details, query, log) => {
+        const { toolCallId, toolName } = details
+        const localToolAsk =
+          details.source === 'tool_call' &&
+          details.forwarding === undefined &&
+          toolCallId !== undefined &&
+          toolCallId !== '' &&
+          toolName !== undefined &&
+          toolName !== ''
+        if (generation === created && observation !== 'uncaptured-ask') {
+          const next = localToolAsk && !actions.hasInvocation(toolCallId) ? 'uncaptured-ask' : 'asked'
+          if (next !== observation) {
+            observation = next
+            renderStatus(created)
+          }
+        }
         let decided: AuthorizerVerdict | undefined
         try {
           decided = manual.authorize(details)
@@ -275,9 +296,8 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
           return decided
         }
         const start = async (): Promise<AuthorizerVerdict> => reviewer.authorize(details, query, log)
-        const { toolCallId } = details
         const call =
-          details.source === 'tool_call' && details.forwarding === undefined && toolCallId !== undefined
+          localToolAsk && (toolName === 'bash' || toolName === 'powershell')
             ? escalationCall(actions.invocation(toolCallId))
             : undefined
         if (call === undefined || call.toolName !== details.toolName) return trackReview(created, start)
@@ -362,6 +382,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
       warn(`${projectPath} is ignored until Pi trusts this project`)
     }
     tally = { allow: 0, deny: 0, defer: 0 }
+    observation = 'registered'
     contextFiles = []
     recorder.start(ctx.sessionManager)
     manual.start(ctx)
@@ -461,7 +482,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   registerAutoReviewCommand(pi, { getActiveConfig: () => generation?.config, applyConfig })
   registerEscalationCommand(pi)
   registerStatisticsCommand(pi, recorder, () => ({
-    registered: generation?.dispose !== undefined,
+    authorizer: authorizerStatus(generation),
     config: generation?.config,
     investigation: investigationOutcome,
     circuitOpen: generation?.reviewer.circuitOpen() ?? false,

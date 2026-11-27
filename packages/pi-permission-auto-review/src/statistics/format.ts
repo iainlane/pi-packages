@@ -1,8 +1,10 @@
 import type { AutoReviewConfig } from '../config/config.js'
+import type { AuthorizerStatus } from '../config/status.js'
 import type { InvestigationOutcome } from '../investigation/investigation.js'
 import type { GlobalTotals } from './recorder.js'
 import type { StatisticsSummary } from './summary.js'
 import type { StatusRow } from './table.js'
+import { AUTHORIZER_STATUS } from '../config/status.js'
 import { formatInvestigationOutcome } from '../investigation/investigation.js'
 import { PRESETS } from '../presets/presets.js'
 import { escapeTerminalText } from '../terminal.js'
@@ -13,7 +15,7 @@ const DETAIL_LIMIT = 20
 
 /** What the report says about the reviewer beside its statistics */
 export interface AutoStatusState {
-  registered: boolean
+  authorizer: AuthorizerStatus
   config: AutoReviewConfig | undefined
   investigation: InvestigationOutcome | undefined
   /** Whether the denial limit refuses every ask without review until the next run */
@@ -164,12 +166,6 @@ function storageProblem(global: Extract<GlobalTotals, { unavailable: string }>):
 
 function notices(state: AutoStatusState, data: StatusData): string[] {
   const problems: string[] = []
-  if (state.config === undefined) {
-    problems.push('Reviewer configuration is unavailable.')
-  }
-  if (!state.registered) {
-    problems.push('The reviewer is not registered with the permission service.')
-  }
   if (state.circuitOpen) {
     problems.push('Automatic reviews are being refused because the denial limit was reached.')
   }
@@ -185,7 +181,7 @@ function notices(state: AutoStatusState, data: StatusData): string[] {
 
 /** Whether the report contains a problem, which shows it as a warning */
 export function hasStatusProblems(state: AutoStatusState, data: StatusData): boolean {
-  return notices(state, data).length > 0
+  return AUTHORIZER_STATUS[state.authorizer].warning || notices(state, data).length > 0
 }
 
 function investigationLine(state: AutoStatusState): string[] {
@@ -240,6 +236,7 @@ function overview(state: AutoStatusState, data: StatusData, columns: number): st
   return [
     'Auto-review',
     `Model: ${state.config === undefined ? 'Unavailable' : escapeTerminalText(`${state.config.provider}/${state.config.model}`)}`,
+    AUTHORIZER_STATUS[state.authorizer].report,
     ...investigationLine(state),
     '',
     ...table,

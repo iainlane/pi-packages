@@ -209,9 +209,9 @@ describe('permission auto-review extension', () => {
     }
   }
 
-  async function review(authorize: Authorize | undefined) {
+  async function review(authorize: Authorize | undefined, toolCallId = 'call-1') {
     const reviewLog = vi.fn<AuthorizerLog['review']>()
-    const verdict = await authorize?.(permissionDetails({ toolCallId: 'call-1' }), {} as PermissionQuery, {
+    const verdict = await authorize?.(permissionDetails({ toolCallId }), {} as PermissionQuery, {
       review: reviewLog,
       debug: vi.fn(),
     })
@@ -385,24 +385,71 @@ describe('permission auto-review extension', () => {
     })
   })
 
-  it('shows in the footer whether the reviewer is registered and how it has decided', async () => {
+  it('reports registration and observed selection in the footer and statistics', async () => {
     const registerAuthorizer = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
     publish(registerAuthorizer)
     const harness = start()
 
     harness.start()
-    expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, 'auto-review inactive')
+    expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, 'auto-review unregistered')
     harness.ready()
-    expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, 'auto-review ready')
+    await harness.run('', 'auto-stats')
+    const registered = {
+      footer: harness.setStatus.mock.lastCall,
+      report: String(harness.notify.mock.lastCall?.[0])
+        .split('\n')
+        .find(line => line.startsWith('The reviewer')),
+    }
 
     await review(registerAuthorizer.mock.calls[0]?.[1])
-    expect(harness.setStatus).toHaveBeenLastCalledWith(
-      EXTENSION_ID,
-      'auto-review ready · 1 denied · last review could not find its pending shell call',
-    )
+    await harness.run('', 'auto-stats')
+    const selected = {
+      footer: harness.setStatus.mock.lastCall,
+      report: String(harness.notify.mock.lastCall?.[0])
+        .split('\n')
+        .find(line => line.startsWith('The permission system')),
+    }
+    expect({ registered, selected }).toStrictEqual({
+      registered: {
+        footer: [EXTENSION_ID, 'auto-review registered · no asks observed · check authorizerChain'],
+        report:
+          'The reviewer is registered. No permission asks have reached it in this session. To review permission asks, add auto-review to authorizerChain.',
+      },
+      selected: {
+        footer: [
+          EXTENSION_ID,
+          'auto-review selected · ask observed · 1 denied · last review could not find its pending shell call',
+        ],
+        report: 'The permission system selected the reviewer for an ask in this session.',
+      },
+    })
 
     harness.shutdown()
     expect(harness.setStatus).toHaveBeenLastCalledWith(EXTENSION_ID, undefined)
+  })
+
+  it('reports the setup action when a local ask arrives without a capture', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const register = vi.fn((_name: string, _authorize: Authorize) => vi.fn())
+    publish(register)
+    const harness = start()
+    harness.start()
+    harness.ready()
+    const { verdict } = await review(register.mock.calls[0]?.[1], 'uncaptured')
+    await harness.run('', 'auto-stats')
+
+    expect({
+      verdict,
+      footer: harness.setStatus.mock.lastCall,
+      report: String(harness.notify.mock.lastCall?.[0])
+        .split('\n')
+        .find(line => line.startsWith('A permission ask')),
+    }).toStrictEqual({
+      verdict: { kind: 'defer' },
+      footer: [EXTENSION_ID, 'auto-review selected · ask arrived before capture · load auto-review first · 1 deferred'],
+      report:
+        'A permission ask reached the reviewer without a tool capture. Load auto-review before pi-permission-system.',
+    })
   })
 
   it('retires the reviewer when clearing the footer throws at shutdown', async () => {
@@ -735,7 +782,7 @@ describe('permission auto-review extension', () => {
           .split('\n')
           .find(line => line.startsWith('Investigation:')),
       }).toStrictEqual({
-        footer: [EXTENSION_ID, `auto-review ready · 1 denied · ${text}`],
+        footer: [EXTENSION_ID, `auto-review selected · ask observed · 1 denied · ${text}`],
         log: reason,
         stats: `Investigation: ${text}`,
       })
@@ -779,7 +826,7 @@ describe('permission auto-review extension', () => {
     }).toStrictEqual({
       verdict: { kind: 'allow' },
       modelTools: [undefined],
-      footer: [EXTENSION_ID, `auto-review ready · 1 allowed · ${text}`],
+      footer: [EXTENSION_ID, `auto-review selected · ask observed · 1 allowed · ${text}`],
       stats: `Investigation: ${text}`,
       entry: [
         'auto_review.decision',
@@ -914,7 +961,7 @@ describe('permission auto-review extension', () => {
         ],
         copy: [],
         tools: undefined,
-        footer: [EXTENSION_ID, `auto-review ready · 1 denied · ${reason}`],
+        footer: [EXTENSION_ID, `auto-review selected · ask observed · 1 denied · ${reason}`],
         stats: `Investigation: ${reason}`,
         log: ['no-suitable-copy', name, requirement, undefined],
       })
@@ -971,9 +1018,9 @@ describe('permission auto-review extension', () => {
       }
 
       expect(observed).toStrictEqual({
-        before: [EXTENSION_ID, 'auto-review ready'],
+        before: [EXTENSION_ID, 'auto-review registered · no asks observed · check authorizerChain'],
         beforeStats: undefined,
-        footer: [EXTENSION_ID, `auto-review ready · 1 denied · ${status}`],
+        footer: [EXTENSION_ID, `auto-review selected · ask observed · 1 denied · ${status}`],
         stats: `Investigation: ${status}`,
         copyCalls: callsTool ? [[expect.any(Object)]] : [],
         logReason: investigation === 'failed to open' ? 'copy-open-failed' : undefined,
@@ -1016,10 +1063,14 @@ describe('permission auto-review extension', () => {
   it.each([
     {
       retire: false,
-      during: 'auto-review ready · 1 denied · last review did not investigate',
-      after: 'auto-review ready · 2 denied · last review inspected a copy',
+      during: 'auto-review selected · ask observed · 1 denied · last review did not investigate',
+      after: 'auto-review selected · ask observed · 2 denied · last review inspected a copy',
     },
-    { retire: true, during: 'auto-review ready', after: 'auto-review ready' },
+    {
+      retire: true,
+      during: 'auto-review registered · no asks observed · check authorizerChain',
+      after: 'auto-review registered · no asks observed · check authorizerChain',
+    },
   ])(
     'updates investigation when an overlapping review finishes (retired: $retire)',
     async ({ retire, during, after }) => {
@@ -1084,7 +1135,7 @@ describe('permission auto-review extension', () => {
 
     expect(harness.setStatus).toHaveBeenLastCalledWith(
       EXTENSION_ID,
-      'auto-review ready · 2 denied · last review did not investigate',
+      'auto-review selected · ask observed · 2 denied · last review did not investigate',
     )
   })
 
@@ -1150,12 +1201,17 @@ describe('permission auto-review extension', () => {
   it.each([
     {
       preset: 'codex',
-      status: 'auto-review ready · no tool route provides review copies',
+      status:
+        'auto-review registered · no asks observed · check authorizerChain · no tool route provides review copies',
       warnings: [
         [`[${EXTENSION_ID}] the reviewer cannot investigate local state: no tool route provides review copies`],
       ],
     },
-    { preset: 'claude-code', status: 'auto-review ready', warnings: [] },
+    {
+      preset: 'claude-code',
+      status: 'auto-review registered · no asks observed · check authorizerChain',
+      warnings: [],
+    },
   ])('shows in the footer when the $preset reviewer cannot investigate', async ({ preset, status, warnings }) => {
     writeFile(configPath(workspace.cwd, 'global'), { preset })
     hasRoute = false
@@ -1248,7 +1304,7 @@ describe('permission auto-review extension', () => {
     }
     if (failure === 'footer') {
       harness.setStatus.mockImplementation((_id: string, status: string | undefined) => {
-        if (status?.startsWith('auto-review ready · 1 denied') === true) {
+        if (status?.startsWith('auto-review selected · ask observed · 1 denied') === true) {
           throw new Error('footer failed')
         }
       })

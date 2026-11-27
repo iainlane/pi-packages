@@ -17,7 +17,7 @@ function setup(mode: 'tui' | 'rpc' | 'print', answers: (string | undefined)[] = 
   let interaction = new AbortController()
   const shown: [string, string][] = []
   const state: AutoStatusState = {
-    registered: true,
+    authorizer: 'asked',
     config: DEFAULT_CONFIG,
     investigation: undefined,
     circuitOpen: false,
@@ -89,10 +89,15 @@ describe('/auto-stats', () => {
     harness.state.investigation = { kind: 'unavailable', reason: 'copy-open-failed' }
     await harness.run('text')
 
-    expect(harness.shown.map(([message, level]) => [message.split('\n').slice(0, 3), level])).toStrictEqual([
-      [['Auto-review', 'Model: openai/codex-auto-review', ''], 'info'],
-      [['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: last review did not investigate'], 'info'],
-      [['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: last review could not open a copy'], 'info'],
+    const header = [
+      'Auto-review',
+      'Model: openai/codex-auto-review',
+      'The permission system selected the reviewer for an ask in this session.',
+    ]
+    expect(harness.shown.map(([message, level]) => [message.split('\n').slice(0, 4), level])).toStrictEqual([
+      [[...header, ''], 'info'],
+      [[...header, 'Investigation: last review did not investigate'], 'info'],
+      [[...header, 'Investigation: last review could not open a copy'], 'info'],
     ])
   })
 

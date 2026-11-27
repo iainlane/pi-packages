@@ -5,7 +5,7 @@ import { formatAutoStatus } from '../../src/statistics/format.js'
 import { emptyModel, emptySummary } from '../../src/statistics/summary.js'
 
 const state: AutoStatusState = {
-  registered: true,
+  authorizer: 'asked',
   config: DEFAULT_CONFIG,
   investigation: { kind: 'inspected' },
   circuitOpen: false,
@@ -30,7 +30,13 @@ function overviewRows(sessionCost = 'USD 0.012345', globalCost = 'USD 0.004100')
   )
 }
 
-const HEADER = ['Auto-review', 'Model: openai/codex-auto-review', 'Investigation: last review inspected a copy', '']
+const HEADER = [
+  'Auto-review',
+  'Model: openai/codex-auto-review',
+  'The permission system selected the reviewer for an ask in this session.',
+  'Investigation: last review inspected a copy',
+  '',
+]
 const STARTED = ['', 'Global totals started 3 Nov 2026, 09:00 UTC']
 const FOOTER = ['', 'Details: /auto-stats details']
 
@@ -124,7 +130,7 @@ describe('statistics presentation', () => {
     },
   ] as const)('shows investigation outcome $line in the overview', ({ investigation, line }) => {
     expect(formatAutoStatus({ ...state, investigation }, sample())).toBe(
-      [...HEADER.slice(0, 2), ...(line === undefined ? [] : [line]), '', ...overviewRows(), ...STARTED, ...FOOTER].join(
+      [...HEADER.slice(0, 3), ...(line === undefined ? [] : [line]), '', ...overviewRows(), ...STARTED, ...FOOTER].join(
         '\n',
       ),
     )
@@ -299,9 +305,9 @@ describe('statistics presentation', () => {
     })
   })
 
-  it('reports an unregistered reviewer, a missing config and the denial limit', () => {
+  it('reports the invalid configuration and the denial limit', () => {
     const output = formatAutoStatus(
-      { registered: false, config: undefined, investigation: undefined, circuitOpen: true },
+      { authorizer: 'invalid-config', config: undefined, investigation: undefined, circuitOpen: true },
       sample(),
     )
 
@@ -312,7 +318,6 @@ describe('statistics presentation', () => {
     ).toStrictEqual([
       'Model: Unavailable',
       'Reviewer configuration is unavailable.',
-      'The reviewer is not registered with the permission service.',
       'Automatic reviews are being refused because the denial limit was reached.',
     ])
   })
