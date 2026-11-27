@@ -1,7 +1,7 @@
 import type { ActionCapture } from '../action/capture.js'
+import type { ReviewRequest } from '../action/request.js'
 import type { ReviewAction } from '../action/schema.js'
 import type { ExtensionContext, SessionEntry, SessionProjection } from '@earendil-works/pi-coding-agent'
-import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { createHash } from 'node:crypto'
 import { INTERACTION_ADAPTERS } from '../presets/codex/interactions.js'
 import { USER_PROVENANCE_TYPE, verifiedUserEntries } from '../provenance/provenance.js'
@@ -73,7 +73,7 @@ function authorityRecord(entry: SessionEntry): unknown {
 }
 
 /** Captures the session state, and the ask's action when `details` is given */
-export function captureSnapshot(sources: SnapshotSources, details?: PromptPermissionDetails): ReviewSnapshot {
+export function captureSnapshot(sources: SnapshotSources, details?: ReviewRequest): ReviewSnapshot {
   const { sessionManager } = sources.context
   const sessionId = sessionManager.getSessionId()
   const branch = sessionManager.getBranch()

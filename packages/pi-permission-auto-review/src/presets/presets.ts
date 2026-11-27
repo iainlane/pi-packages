@@ -1,9 +1,9 @@
+import type { ReviewRequest } from '../action/request.js'
 import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig, PresetName, RuleListName } from '../config/config.js'
 import type { ReviewConversation } from '../reviewer/conversation.js'
 import type { CallFailure, ModelCall } from '../reviewer/model-call.js'
 import type { SessionEntry, SessionProjection } from '@earendil-works/pi-coding-agent'
-import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import type { DestinationDescription, EscalationRequest } from 'pi-bring-your-own-sandbox/consumer'
 import { CLAUDE_CODE_PRESET } from './claude-code/preset.js'
 import { CODEX_PRESET } from './codex/preset.js'
@@ -18,7 +18,7 @@ interface ReviewInput {
   branch: SessionEntry[]
   /** The context that the agent's model sees: compaction and context edits applied to `branch` */
   projection: SessionProjection
-  details: PromptPermissionDetails
+  details: ReviewRequest
   /** The complete input of the call that raised the ask, captured before pi-permission-system asked */
   action: ReviewAction
   /** Already narrowed to the files the user's trust covers */

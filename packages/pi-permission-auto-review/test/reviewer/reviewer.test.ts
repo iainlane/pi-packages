@@ -535,14 +535,14 @@ describe('permission reviewer', () => {
 
   describe('statistics', () => {
     function sink() {
-      const reports: [string, ReviewReport][] = []
+      const reports: [string | undefined, ReviewReport][] = []
       const late: LateUsage[] = []
 
       return {
         reports,
         late,
         statistics: {
-          review: (id: string, report: ReviewReport) => reports.push([id, report]),
+          review: (id: string | undefined, report: ReviewReport) => reports.push([id, report]),
           late: (usage: LateUsage) => late.push(usage),
           manual: () => {},
         },

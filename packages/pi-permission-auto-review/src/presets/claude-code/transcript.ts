@@ -1,8 +1,8 @@
+import type { ReviewRequest } from '../../action/request.js'
 import type { ReviewAction } from '../../action/schema.js'
 import type { TranscriptCursor } from '../../reviewer/conversation.js'
 import type { SessionEvent } from '../session.js'
 import type { SessionEntry } from '@earendil-works/pi-coding-agent'
-import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { submittedTexts, uncertainUserEntries, verifiedUserEntries } from '../../provenance/provenance.js'
 import { approximateTokens, serializeUnknown, truncateToFit } from '../../text.js'
 import { permissionRequest } from '../permission-request.js'
@@ -83,7 +83,7 @@ function precedes(event: SessionEvent, target: ToolCall): boolean {
  */
 export function renderTranscript(
   entries: SessionEntry[],
-  details: PromptPermissionDetails,
+  details: ReviewRequest,
   after?: TranscriptCursor,
   action?: ReviewAction,
 ): ClaudeCodeTranscript {

@@ -1,4 +1,5 @@
 import type { ActionCapture } from '../action/capture.js'
+import type { DirectEscalationRequest, ReviewRequest } from '../action/request.js'
 import type { ReviewAction } from '../action/schema.js'
 import type { AutoReviewConfig } from '../config/config.js'
 import type { EscalationDecisionEntry } from '../escalation/decisions.js'
@@ -11,13 +12,13 @@ import type { CallUsage, ModelCall } from './model-call.js'
 import type { ReviewModelRegistry } from './model.js'
 import type { ReviewSnapshot } from './snapshot.js'
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
+import type { Authorizer, AuthorizerLog, AuthorizerVerdict } from '@gotgenes/pi-permission-system'
 import type {
-  Authorizer,
-  AuthorizerLog,
-  AuthorizerVerdict,
-  PromptPermissionDetails,
-} from '@gotgenes/pi-permission-system'
-import type { DestinationDescription, EscalationDecision, EscalationRequest } from 'pi-bring-your-own-sandbox/consumer'
+  DestinationDescription,
+  EscalationDecision,
+  EscalationRequest,
+  ShellReviewSource,
+} from 'pi-bring-your-own-sandbox/consumer'
 import { isSandboxError } from 'pi-bring-your-own-sandbox/consumer'
 import { PRESETS } from '../presets/presets.js'
 import { CallLog } from '../statistics/calls.js'
@@ -66,6 +67,11 @@ export interface ReviewerRuntime {
 
 export interface PermissionReviewer {
   authorize: Authorizer['authorize']
+  reviewEscalation: (
+    request: DirectEscalationRequest,
+    source: ShellReviewSource,
+    log: AuthorizerLog,
+  ) => Promise<AuthorizerVerdict>
   /** Clears the denials the preset counts per turn */
   resetTurn: () => void
   /** Whether the denial limit refuses every ask unreviewed */
@@ -100,7 +106,7 @@ type ReviewResult = ReviewWork &
 async function reviewCurrentEvidence(
   runtime: ReviewerRuntime,
   preset: Preset,
-  details: PromptPermissionDetails,
+  details: ReviewRequest,
   conversation: ReviewConversation | undefined,
   options: {
     complete: ModelCall
@@ -160,7 +166,7 @@ async function reviewCurrentEvidence(
 async function runReview(
   runtime: ReviewerRuntime,
   preset: Preset,
-  request: { details: PromptPermissionDetails; action: ReviewAction },
+  request: { details: ReviewRequest; action: ReviewAction; source?: ShellReviewSource | undefined },
   conversation: ReviewConversation | undefined,
   log: AuthorizerLog,
 ): Promise<ReviewResult> {
@@ -181,7 +187,7 @@ async function runReview(
     if (signal.aborted) {
       return { kind: 'failed', failure: 'cancelled' }
     }
-    const route = runtime.investigation?.forReview(signal, details)
+    const route = runtime.investigation?.forReview(signal, details, request.source)
     const escalation = route?.escalation
     const requested =
       'input' in action &&
@@ -265,14 +271,14 @@ async function runReview(
     const cleanup = await investigation?.close()
     if (cleanup !== undefined) {
       log.review('auto_review.copy_cleanup', {
-        requestId: details.requestId,
+        ...requestIdentity(details),
         failure: cleanup.failure,
         ...(cleanup.failure === 'unconfirmed' ? cleanup.details : {}),
       })
       if (cleanup.failure === 'timed-out') {
         void cleanup.late.then(outcome => {
           log.review('auto_review.copy_cleanup', {
-            requestId: details.requestId,
+            ...requestIdentity(details),
             late: true,
             ...(outcome === 'not-opened' ? { opened: false } : { confirmed: outcome === 'confirmed' }),
             ...(typeof outcome === 'string' ? {} : outcome.details),
@@ -294,7 +300,7 @@ interface EscalationFailure {
 
 function applyEscalationDecision(
   runtime: ReviewerRuntime,
-  details: PromptPermissionDetails,
+  details: ReviewRequest,
   result: Exclude<ReviewResult, { kind: 'failed' }>,
   log: AuthorizerLog,
 ): EscalationFailure | undefined {
@@ -345,6 +351,10 @@ function quiet(log: AuthorizerLog): AuthorizerLog {
   return { review: guarded(log.review.bind(log)), debug: guarded(log.debug.bind(log)) }
 }
 
+function requestIdentity(details: ReviewRequest): { requestId: string } | { toolCallId: string } {
+  return details.source === 'byos_escalation' ? { toolCallId: details.toolCallId } : { requestId: details.requestId }
+}
+
 export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionReviewer {
   const { config } = runtime
   const preset = PRESETS[config.preset]
@@ -353,21 +363,24 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
   // As upstream keeps it: concurrent reviews each continue the conversation they started from, and the last to finish wins
   let conversation: ReviewConversation | undefined
 
-  const authorize: Authorizer['authorize'] = async (details, _query, rawLog) => {
+  async function review(
+    details: ReviewRequest,
+    rawLog: AuthorizerLog,
+    source?: ShellReviewSource,
+  ): Promise<AuthorizerVerdict> {
     const log = quiet(rawLog)
     const startedAt = Date.now()
-    const entryBase = { requestId: details.requestId, provider: config.provider, model: config.model }
+    const entryBase = { ...requestIdentity(details), provider: config.provider, model: config.model }
     const elapsed = (): number => Math.max(0, Date.now() - startedAt)
     const logFailure = (entry: Record<string, unknown>): void => {
       log.review(DECISION_EVENT, entry)
       log.debug('auto_review.failure', entry)
     }
-    // Every verdict leaves through here, so the statistics count each ask that this reviewer answered
     const finish = (
       verdict: AuthorizerVerdict,
       outcome: { failure?: string; circuitTripped?: true; work?: ReviewWork } = {},
     ): AuthorizerVerdict => {
-      runtime.statistics?.review(details.requestId, {
+      runtime.statistics?.review(details.source === 'byos_escalation' ? undefined : details.requestId, {
         outcome: verdict.kind,
         failure: outcome.failure,
         circuitTripped: outcome.circuitTripped,
@@ -416,7 +429,7 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
         return refuseOpenCircuit(refusal)
       }
 
-      const result = await runReview(runtime, preset, { details, action }, conversation, log)
+      const result = await runReview(runtime, preset, { details, action, source }, conversation, log)
       // Another review tripped the circuit while this one ran
       const lateRefusal = limiter.refusal()
       if (lateRefusal !== undefined) {
@@ -505,5 +518,10 @@ export function createPermissionReviewer(runtime: ReviewerRuntime): PermissionRe
     }
   }
 
-  return { authorize, resetTurn: () => limiter.resetTurn(), circuitOpen: () => limiter.refusal() !== undefined }
+  return {
+    authorize: async (details, _query, log) => review(details, log),
+    reviewEscalation: async (request, source, log) => review(request, log, source),
+    resetTurn: () => limiter.resetTurn(),
+    circuitOpen: () => limiter.refusal() !== undefined,
+  }
 }

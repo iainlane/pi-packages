@@ -365,7 +365,10 @@ export function createReviewerHarness(options: ReviewerHarnessOptions): Reviewer
   const reviewer = createPermissionReviewer({
     config: mergeConfig({}, { provider: 'custom-review', model: 'review-model', ...options.config }),
     actions: {
-      resolve: options.resolve ?? (details => ({ kind: 'eligible', action: capturedAction(branch, details) })),
+      resolve: details =>
+        details.source === 'byos_escalation'
+          ? { kind: 'action-unavailable' }
+          : (options.resolve?.(details) ?? { kind: 'eligible', action: capturedAction(branch, details) }),
       registryDigest: () => state.registryDigest,
     },
     context: {

@@ -1,5 +1,5 @@
+import type { ReviewRequest } from '../action/request.js'
 import type { Tool, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
-import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import type {
   DestinationDescription,
   EscalationRequest,
@@ -53,7 +53,7 @@ const COPY_REQUIREMENTS = {
   terminationScope: 'process-group',
 } as const satisfies SandboxRequirements
 
-type ProposedTool = Pick<PromptPermissionDetails, 'source' | 'toolCallId' | 'toolName' | 'forwarding'>
+type ProposedTool = Pick<ReviewRequest, 'source' | 'toolCallId' | 'toolName' | 'forwarding'>
 
 export type InvestigationAvailability = { available: true } | { available: false; reason: string }
 
@@ -303,8 +303,11 @@ export class Investigation {
     return { available: false, reason: UNAVAILABLE_REASONS['no-session-route'] }
   }
 
-  forReview(signal: AbortSignal, tool: ProposedTool): InvestigationRun {
+  forReview(signal: AbortSignal, tool: ProposedTool, source?: ShellReviewSource): InvestigationRun {
     const context = this.context
+    if (source !== undefined) {
+      return new InvestigationRun(signal, context?.cwd ?? '', { ok: true, source })
+    }
     const { toolName, toolCallId } = tool
     if (
       context === undefined ||

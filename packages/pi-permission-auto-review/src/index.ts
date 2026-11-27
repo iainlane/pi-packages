@@ -12,6 +12,7 @@ import type {
   PermissionsReadyEvent,
   PermissionsService,
 } from '@gotgenes/pi-permission-system'
+import type { ShellReviewLookup } from 'pi-bring-your-own-sandbox/consumer'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
@@ -22,11 +23,13 @@ import {
 } from '@gotgenes/pi-permission-system'
 import { createSandboxClient } from 'pi-bring-your-own-sandbox/consumer'
 import { ActionCapture } from './action/capture.js'
+import { escalationCall } from './action/request.js'
 import { registerAutoReviewCommand } from './config/command.js'
 import { EXTENSION_ID } from './config/config.js'
 import { configPath, loadConfig } from './config/store.js'
 import { registerEscalationCommand } from './escalation/command.js'
 import { appendEscalationDecision } from './escalation/decisions.js'
+import { directEscalationLog } from './escalation/diagnostics.js'
 import { PowerShellEscalationPreview } from './escalation/powershell-preview.js'
 import { formatInvestigationOutcome, Investigation } from './investigation/investigation.js'
 import { ManualApprovalController } from './manual/controller.js'
@@ -112,8 +115,9 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   const recorder = new StatisticsRecorder(pi, {
     directory: () => join(getAgentDir(), 'extensions', EXTENSION_ID, 'statistics'),
   })
-  // Authorize calls in progress, which shutdown lets finish recording their verdicts
+  // Reviews in progress, which shutdown lets finish recording their verdicts
   const outstanding = new Set<Promise<AuthorizerVerdict>>()
+  const escalationReviews = new Map<string, Promise<AuthorizerVerdict>>()
   let investigationOutcome: InvestigationOutcome | undefined
   let sessionStarts = 0
   let generation: Generation | undefined
@@ -143,11 +147,40 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     }
   })
   const escalationPreview = new PowerShellEscalationPreview(sandbox, warn)
-  actions.onCaptured((invocation, context, input) => {
+  actions.onCaptured(async (invocation, context, input) => {
     escalationPreview.capture(invocation, context, input)
-    return undefined
+    const current = generation
+    const call = escalationCall(invocation)
+    if (call === undefined || current?.config === undefined || !PRESETS[current.config.preset].decidesEscalations) {
+      return undefined
+    }
+    const { toolCallId } = call
+    let pending = escalationReviews.get(toolCallId)
+    if (pending === undefined) {
+      let lookup: ShellReviewLookup
+      try {
+        lookup = sandbox.findShellReviewSource(context, { toolCallId, toolName: call.toolName })
+      } catch {
+        return undefined
+      }
+      if (!lookup.ok || lookup.source.escalation?.toolCallId !== toolCallId) return undefined
+
+      const { source } = lookup
+      const session = sessionStarts
+      const log = directEscalationLog(pi, toolCallId, () => generation !== undefined && sessionStarts === session)
+      pending = startEscalationReview(toolCallId, current, async () =>
+        current.reviewer.reviewEscalation(call, source, log),
+      )
+    }
+    const verdict = await pending
+    if (verdict.kind !== 'deny') return undefined
+
+    return { block: true, reason: verdict.reason ?? 'Automatic review denied the escalation' }
   })
-  pi.on('tool_execution_end', event => escalationPreview.end(event.toolCallId))
+  pi.on('tool_execution_end', event => {
+    escalationReviews.delete(event.toolCallId)
+    escalationPreview.end(event.toolCallId)
+  })
   registerManualApprovalTool(pi, manual)
   pi.events.on(PERMISSIONS_DECISION_CHANNEL, data => manual.decided(data as PermissionDecisionEvent))
 
@@ -163,14 +196,47 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
     setFooterStatus(current.runtime, statusText(current, tally, investigationOutcome))
   }
 
+  async function trackReview(current: Generation, start: () => Promise<AuthorizerVerdict>): Promise<AuthorizerVerdict> {
+    const pending = Promise.resolve().then(start)
+    outstanding.add(pending)
+    let verdict: AuthorizerVerdict
+    try {
+      verdict = await pending
+    } catch {
+      verdict = { kind: 'defer' }
+    } finally {
+      outstanding.delete(pending)
+    }
+    if (generation === current) {
+      tally[verdict.kind] += 1
+      renderStatus(current)
+    }
+
+    return verdict
+  }
+
+  async function startEscalationReview(
+    toolCallId: string,
+    current: Generation,
+    start: () => Promise<AuthorizerVerdict>,
+  ): Promise<AuthorizerVerdict> {
+    const pending = trackReview(current, start)
+    escalationReviews.set(toolCallId, pending)
+    return pending
+  }
+
   function createGeneration(runtime: Generation['runtime'], config: AutoReviewConfig | undefined): Generation {
     const controller = new AbortController()
     const history = { controller: new AbortController() }
     const sessionSignal = (): AbortSignal => AbortSignal.any([controller.signal, history.controller.signal])
-    let latestInvestigation: InvestigationOutcome | undefined
     const reviewer: PermissionReviewer =
       config === undefined
-        ? { authorize: deferInvalidConfig, resetTurn: () => {}, circuitOpen: () => false }
+        ? {
+            authorize: deferInvalidConfig,
+            reviewEscalation: async () => ({ kind: 'defer' }),
+            resetTurn: () => {},
+            circuitOpen: () => false,
+          }
         : createPermissionReviewer({
             config,
             actions,
@@ -179,7 +245,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
             contextFiles: () => contextFiles,
             investigation,
             onInvestigation: outcome => {
-              latestInvestigation = outcome
+              if (generation?.controller === controller) investigationOutcome = outcome
             },
             escalation: {
               record: (request, decision) => sandbox.recordEscalationDecision(runtime, request, decision),
@@ -208,22 +274,20 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
         if (decided !== undefined) {
           return decided
         }
-        const pending = reviewer.authorize(details, query, log)
-        outstanding.add(pending)
-        let verdict: AuthorizerVerdict
-        try {
-          verdict = await pending
-        } catch {
-          // The chain does not isolate a link that throws, so a failure has to leave as a verdict
-          verdict = { kind: 'defer' }
-        } finally {
-          outstanding.delete(pending)
-        }
-        // A retired generation answers for a session or config that is gone
-        if (generation === created) {
-          investigationOutcome = latestInvestigation ?? investigationOutcome
-          tally[verdict.kind] += 1
-          renderStatus(created)
+        const start = async (): Promise<AuthorizerVerdict> => reviewer.authorize(details, query, log)
+        const { toolCallId } = details
+        const call =
+          details.source === 'tool_call' && details.forwarding === undefined && toolCallId !== undefined
+            ? escalationCall(actions.invocation(toolCallId))
+            : undefined
+        if (call === undefined || call.toolName !== details.toolName) return trackReview(created, start)
+
+        const shared = escalationReviews.get(call.toolCallId)
+        if (shared === undefined) return startEscalationReview(call.toolCallId, created, start)
+
+        const verdict = await shared
+        if (verdict.kind === 'defer' && generation?.runtime === created.runtime) {
+          recorder.watchDeferred(details.requestId)
         }
 
         return verdict
@@ -288,6 +352,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
 
   pi.on('session_start', (_event, ctx) => {
     retire(generation)
+    escalationReviews.clear()
     escalationPreview.start()
     const projectTrusted = ctx.isProjectTrusted()
     const result = loadConfig(ctx.cwd, projectTrusted)
@@ -381,6 +446,7 @@ export default function permissionAutoReview(pi: ExtensionAPI): void {
   pi.on('session_shutdown', async (_event, ctx) => {
     setFooterStatus(ctx, undefined)
     escalationPreview.stop()
+    escalationReviews.clear()
     retire(generation)
     generation = undefined
     sessionId = undefined

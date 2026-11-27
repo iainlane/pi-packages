@@ -1,4 +1,5 @@
 import type { JsonObject } from './json.js'
+import type { ReviewRequest } from './request.js'
 import type { ReviewAction, ToolRegistration } from './schema.js'
 import type {
   ExtensionAPI,
@@ -7,7 +8,6 @@ import type {
   ToolCallEventResult,
   ToolInfo,
 } from '@earendil-works/pi-coding-agent'
-import type { PromptPermissionDetails } from '@gotgenes/pi-permission-system'
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -60,7 +60,7 @@ type CaptureObserver = (
   invocation: CapturedInvocation,
   ctx: ExtensionContext,
   input: ToolCallEvent['input'],
-) => ToolCallEventResult | undefined
+) => ToolCallEventResult | undefined | Promise<ToolCallEventResult | undefined>
 
 interface McpToolName {
   server: string
@@ -171,14 +171,14 @@ export class ActionCapture {
 
   constructor(pi: ExtensionAPI) {
     this.pi = pi
-    pi.on('tool_call', (event, ctx) => {
+    pi.on('tool_call', async (event, ctx) => {
       this.capture(event, ctx)
       const invocation = this.invocation(event.toolCallId)
       if (invocation === undefined) {
         return undefined
       }
       for (const observer of this.observers) {
-        const result = observer(invocation, ctx, event.input)
+        const result = await observer(invocation, ctx, event.input)
         if (result?.block === true) {
           return result
         }
@@ -256,7 +256,7 @@ export class ActionCapture {
     return inputDigest(registrations.toSorted((a, b) => a.name.localeCompare(b.name)))
   }
 
-  resolve(details: PromptPermissionDetails, sessionId: string): ActionResolution {
+  resolve(details: ReviewRequest, sessionId: string): ActionResolution {
     if (details.forwarding !== undefined) {
       return { kind: 'forwarded' }
     }

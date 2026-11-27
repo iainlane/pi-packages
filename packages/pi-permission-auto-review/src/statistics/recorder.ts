@@ -18,7 +18,7 @@ export type ReviewReport = Omit<Extract<StatisticsRecord, { kind: 'review' }>, '
 
 /** What a session's reviews and manual approvals report; never throws, so recording cannot change a verdict */
 export interface ReviewStatistics {
-  review: (requestId: string, report: ReviewReport) => void
+  review: (requestId: string | undefined, report: ReviewReport) => void
   late: (usage: LateUsage) => void
   manual: (
     stage: ManualStage,
@@ -83,7 +83,7 @@ export class StatisticsRecorder {
           return
         }
         this.record(session, { kind: 'review', session: session.statistics.session, ...report })
-        if (report.outcome === 'defer' && !session.retired) {
+        if (report.outcome === 'defer' && requestId !== undefined) {
           this.watch(session, requestId)
         }
       },
@@ -171,7 +171,13 @@ export class StatisticsRecorder {
     }
   }
 
+  watchDeferred(requestId: string): void {
+    if (this.session !== undefined) this.watch(this.session, requestId)
+  }
+
   private watch(session: Session, requestId: string): void {
+    if (session.retired || session.watched.has(requestId)) return
+
     if (session.watched.size >= MAX_WATCHED_ASKS) {
       const [oldest] = session.watched.keys()
       session.watched.delete(oldest!)
